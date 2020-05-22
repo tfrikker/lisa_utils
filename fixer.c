@@ -73,7 +73,7 @@ int main (int argc, char *argv[]) {
     fseek(BLU, 2 * (DATA_PER_BLOCK + TAG_PER_BLOCK), SEEK_SET); // seek to first real block
     for (int i = 0; i < (blocks_in_device - 1); i++) { // skip block 0 for calculating tag checksum
         fseek(BLU, DATA_PER_BLOCK, SEEK_CUR); // seek past data
-        for (int j = 0; j < 0x14; j++) {
+        for (int j = 0; j < TAG_PER_BLOCK; j++) {
             fread(&curWord, 2, 1, BLU);
             curWord = htons(curWord);
             val += curWord;
