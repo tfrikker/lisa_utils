@@ -1,8 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+
 const int DATA_PER_BLOCK = 0x200; // data bytes per block
 const int TAG_PER_BLOCK = 0x14; //tag bytes per block
+
 int main (int argc, char *argv[]) {
     FILE *BLU;//Declare input and output files
     FILE *DC;
@@ -10,31 +12,29 @@ int main (int argc, char *argv[]) {
         BLU = fopen("BLU.blu", "r"); //and open them
     }
     DC = fopen("ProFile.dc42", "w");
+
+    // check disk length
     fseek(BLU, 0, SEEK_END);
     printf("Disk length: 0x%lX\n", ftell(BLU));
 
     // read disk name
+    fseek(BLU, 0x0, SEEK_SET);
+    char diskName[0x3F] = "";
+    fread(diskName, 1, 0xD, BLU);
     putc(0xD, DC); // put length of name
-    fseek(BLU, 0x00, SEEK_SET);
-    for (int i = 0; i < 0xD; i++) {
-        putc(getc(BLU), DC);
-    }
-    // pad rest of DC42 name space
-    for (int i = 0; i < 0x3F - 0xD; i++) {
-        putc(0x00, DC);
-    }
+    fwrite(diskName, 1, 0x3F, DC);
+    printf("Disk name: %s\n", diskName);
 
     // read device type
-    fseek(BLU, 0x0D, SEEK_SET);
-    printf("Type of device: '");
-    for (int i = 0; i < 0x03; i++) {
-        printf("%02X", getc(BLU));
-    }
-    printf("'\n");
+    fseek(BLU, 0xD, SEEK_SET);
+    uint32_t deviceType = 0;
+    fread(&deviceType, 3, 1, BLU);
+    deviceType = htonl(deviceType);
+    printf("Device type: 0x%06X\n", deviceType);
 
     // read device block count
     fseek(BLU, 0x12, SEEK_SET);
-    uint32_t blocks_in_device;
+    uint32_t blocks_in_device = 0;
     fread(&blocks_in_device, 3, 1, BLU);
     printf("Blocks in device: 0x%06X\n", blocks_in_device);
 
