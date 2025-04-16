@@ -94,6 +94,18 @@ int findMDDFSec() {
     return -1;
 }
 
+int findBitmapSec() {
+    for (int i = 0; i < SECTORS_IN_DISK; i++) {
+        char *tag = readTag(i);
+        uint16_t type = ((tag[4] & 0xFF) << 8) | (tag[5] & 0xFF);
+        if (type == 0x0002) {
+            return i;
+        }
+    }
+
+    return -1;
+}
+
 int findFsSectors(int* dataToWrite) {
     int count = 0;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
@@ -193,8 +205,23 @@ char calculateChecksum(int sector) {
     return checksumByte;
 }
 
+//TODO there is a bug here. Fix it!
+void fixFreeBitmap(int bitmapSec, int sec) {
+    bool free7 = !isFreeSector(sec);
+    bool free6 = !isFreeSector(sec+1); //todo might be wrong. Don't overdo it - hidden files?
+    bool free5 = !isFreeSector(sec+2);
+    bool free4 = !isFreeSector(sec+3);
+    bool free3 = !isFreeSector(sec+4);
+    bool free2 = !isFreeSector(sec+5);
+    bool free1 = !isFreeSector(sec+6);
+    bool free0 = !isFreeSector(sec+7);
+    char byteToWrite = (free0 << 7) | (free1 << 6) | (free2 << 5) | (free3 << 4) | (free4 << 3) | (free5 << 2) | (free6 << 1) | (free7);
+    printf("sec=%d, bitvalue=0x%02X. Writing to sec=%d, %d\n", sec, byteToWrite & 0xFF, bitmapSec + (((sec - 0x26) / 8) / SECTOR_SIZE), ((sec - 0x26) / 8) % SECTOR_SIZE);
+    writeSector(bitmapSec + (((sec - 0x26) / 8) / SECTOR_SIZE), ((sec - 0x26) / 8) % SECTOR_SIZE, byteToWrite & 0xFF);
+}
+
 // returns the first sector of the 4
-int claimNextFreeDirectoryBlock(int MDDFSec) {
+int claimNextFreeDirectoryBlock(int bitmapSec, int MDDFSec) {
     for (int i = DIRECTORY_SEC_OFFSET; i < SECTORS_IN_DISK; i += 4) { //let's start looking after where the directories tend to begin
         if (isFreeSector(i) && isFreeSector(i + 1) && isFreeSector(i + 2) && isFreeSector(i + 3)) {
             for (int j = 0; j < 4; j++) {
@@ -238,10 +265,16 @@ int claimNextFreeDirectoryBlock(int MDDFSec) {
             writeSector(i, 1, 0x00);
             writeSector(i, 2, 0x00);
 
-            //TODO decrementMDDFFreeCount(MDDFSec);
-            //TODO decrementMDDFFreeCount(MDDFSec);
-            //TODO decrementMDDFFreeCount(MDDFSec);
-            //TODO decrementMDDFFreeCount(MDDFSec);
+            fixFreeBitmap(bitmapSec, i);
+            fixFreeBitmap(bitmapSec, i+1);
+            fixFreeBitmap(bitmapSec, i+2);
+            fixFreeBitmap(bitmapSec, i+3);
+
+            //TODO change file size of FS file in S-records?
+            decrementMDDFFreeCount(MDDFSec);
+            decrementMDDFFreeCount(MDDFSec);
+            decrementMDDFFreeCount(MDDFSec);
+            decrementMDDFFreeCount(MDDFSec);
 
             return i;
         }
@@ -250,7 +283,7 @@ int claimNextFreeDirectoryBlock(int MDDFSec) {
 }
 
 //returns the sector index
-int claimNextFreeFSSector(int MDDFSec, int lastUsedFSIndex) {
+int claimNextFreeFSSector(int bitmapSec, int MDDFSec, int lastUsedFSIndex) {
     for (int i = DIRECTORY_SEC_OFFSET; i < SECTORS_IN_DISK; i += 1) { //let's start looking after where the directories tend to begin
         if (isFreeSector(i)) {
             int index = lastUsedFSIndex - 1;
@@ -278,7 +311,10 @@ int claimNextFreeFSSector(int MDDFSec, int lastUsedFSIndex) {
             for (int j = 0; j < SECTOR_SIZE; j++) {
                 writeSector(i, j, 0x00); 
             }
-            //TODO decrementMDDFFreeCount(MDDFSec);
+            fixFreeBitmap(bitmapSec, i);
+
+            //TODO change file size of directory file in S-records?
+            decrementMDDFFreeCount(MDDFSec);
             return i;
         }
     }
@@ -446,12 +482,12 @@ void incrementMDDFFileCount(int MDDFSec) {
     char *sec = readSector(MDDFSec);
     int fileCount = ((sec[0xB0] & 0xFF) << 8) | (sec[0xB1] & 0xFF);
     fileCount++;
-    //writeSector(MDDFSec, 0xB0, (fileCount >> 8) & 0xFF);
-    //writeSector(MDDFSec, 0xB1, fileCount & 0xFF);
+    writeSector(MDDFSec, 0xB0, (fileCount >> 8) & 0xFF);
+    writeSector(MDDFSec, 0xB1, fileCount & 0xFF);
 
     // this is a mystery byte - but it looks like it increments, so we'll do that too.
-    //char c = sec[0x9F] & 0xFF;
-    //writeSector(MDDFSec, 0x9F, (++c & 0xFF));
+    char c = sec[0x9F] & 0xFF;
+    writeSector(MDDFSec, 0x9F, (++c & 0xFF));
 }
 
 void fixAllTagChecksums() {
@@ -479,7 +515,7 @@ int main (int argc, char *argv[]) {
     int freeSectors = countFreeSectors();
     printf("Free sectors in disk: %d\n", freeSectors);
 
-    for (int i = 0; i < 100; i++) {
+    for (int i = 0; i < 10000; i++) {
         char calculatedChecksum = calculateChecksum(i);
         printf("sec %d (0x%02X) with chksum 0x%02X:", i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
         char *tag = readTag(i);
@@ -514,12 +550,14 @@ int main (int argc, char *argv[]) {
     printf("\n");
 
     int MDDFSec = findMDDFSec();
+    int bitmapSec = findBitmapSec();
+
     printf("Found the MDDF at sector = %d\n", MDDFSec);
 
     int offset = findNewDirectoryEntryOffset(numDirSecs, directorySectors);
     while (offset == -1) {
         printf("No space found for a new entry. Creating some...\n");
-        int nextFreeBlock = claimNextFreeDirectoryBlock(MDDFSec);
+        int nextFreeBlock = claimNextFreeDirectoryBlock(bitmapSec, MDDFSec);
         printf("Space to create new directory block claimed at sector = %d\n", nextFreeBlock);
         int numDirSecs = findDirectorySectors(directorySectors); //recalc this as we've just obtained some new ones
         offset = findNewDirectoryEntryOffset(numDirSecs, directorySectors);
@@ -530,7 +568,7 @@ int main (int argc, char *argv[]) {
 
     writeDirectoryEntry(offset);
 
-    int sector = claimNextFreeFSSector(MDDFSec, lastUsedFSIndex);
+    int sector = claimNextFreeFSSector(bitmapSec, MDDFSec, lastUsedFSIndex);
     lastUsedFSIndex = findLastUsedFSIndex();
     //printf("Space to create new FS sector claimed at = %d\n", sector);
     writeFSEntry(sector);
@@ -542,19 +580,44 @@ int main (int argc, char *argv[]) {
     //TODO test writing s-file entries. If this works, write a function for it
     char toWriteTest[] = {
         0x00, 0x00, 0x00, 0x5E, 
-        0x00, 0x00, 0x22, 0x00,
+        0x00, 0x00, 0x22, 0x00, //sector 0x2200 (+0x26)
         0x00, 0x00, 0x02, 0x00,
         0x00, 0x00,
     }; 
     writeToImg(43, 0x188, 14, toWriteTest);
-    
 
-    fwrite(image, 1, FILE_LENGTH, output);
+    //TODO test writing tag entry for data block. If this works, write a function for it.
+    writeTag(0x2226, 0, 0x00); //version (2 bytes)
+    writeTag(0x2226, 1, 0x00); 
+    writeTag(0x2226, 2, 0x00); //vol (2 bytes)
+    writeTag(0x2226, 3, 0x00); 
+    writeTag(0x2226, 4, 0x00); //file ID (2 bytes)
+    writeTag(0x2226, 5, 0x5E);
+    writeTag(0x2226, 6, 0x82); //dataused (2 bytes. 0x8200, standard, it seems)
+    writeTag(0x2226, 7, 0x00); 
+    writeTag(0x2226, 8, 0x00); //abspage (3 bytes. The sector, 0x26? check this)
+    writeTag(0x2226, 9, 0x22); 
+    writeTag(0x2226, 10, 0x00); 
+    writeTag(0x2226, 11, 0x00); // checksum (1 byte - will be fixed later)
+    writeTag(0x2226, 12, 0x00); // relpage (2 bytes. 0x00 in this case, since we're a 1 sector piece of data)
+    writeTag(0x2226, 13, 0x00);
+    writeTag(0x2226, 14, 0xFF); // fwdlink (3 bytes. 0xFFFFFF says none)
+    writeTag(0x2226, 15, 0xFF);
+    writeTag(0x2226, 16, 0xFF);
+    writeTag(0x2226, 17, 0xFF); // bkwdlink (3 bytes. 0xFFFFFF says none)
+    writeTag(0x2226, 18, 0xFF);
+    writeTag(0x2226, 19, 0xFF);
+    fixFreeBitmap(bitmapSec, 0x2226);
+
+    //TODO bitmapSec = findBitmapSec();
+    //TODO fixFreeBitmap(bitmapSec);
 
     fixAllTagChecksums();
 
     freeSectors = countFreeSectors();
     printf("Free sectors in disk: %d\n", freeSectors);
+
+    fwrite(image, 1, FILE_LENGTH, output);
 
     fclose(output);
 
