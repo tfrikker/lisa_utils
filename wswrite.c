@@ -13,21 +13,19 @@ const int TAG_SIZE = 0x14;           // for ProFile disks
 const int DIRECTORY_SEC_OFFSET = 61; // Which sector the directory listing starts on
 const int SECTORS_IN_DISK = 0x2600;  // for 5MB ProFile
 
-char* readFile() {
+char *image;
+
+void readFile() {
     FILE *fileptr;
-    char *image;
-    
     fileptr = fopen("WS_MASTER.dc42", "rb");     // Open the file in binary mode
     image = (char *) malloc(FILE_LENGTH * sizeof(char)); // Enough memory for the file
     fread(image, FILE_LENGTH, 1, fileptr); // Read in the entire file
     fclose(fileptr); // Close the file
 
     printf("Read file: length = 0x%X\n", FILE_LENGTH);
-
-    return image;
 }
 
-char* readSector(int sector, char* image) {
+char* readSector(int sector) {
     char *sec = (char *) malloc(SECTOR_SIZE * sizeof(char));
     int startIdx = DATA_OFFSET + (sector * SECTOR_SIZE);
     for (int i = 0; i < SECTOR_SIZE; i++) {
@@ -37,7 +35,7 @@ char* readSector(int sector, char* image) {
     return sec;
 }
 
-char* read4Sectors(int sector, char* image) {
+char* read4Sectors(int sector) {
     char *sec = (char *) malloc(SECTOR_SIZE * sizeof(char) * 4);
     int startIdx = DATA_OFFSET + (sector * SECTOR_SIZE);
     for (int i = 0; i < SECTOR_SIZE * 4; i++) {
@@ -47,7 +45,7 @@ char* read4Sectors(int sector, char* image) {
     return sec;
 }
 
-char* readTag(int sector, char* image) {
+char* readTag(int sector) {
     char *tag = (char *) malloc(TAG_SIZE * sizeof(char));
     int startIdx = DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE);
     for (int i = 0; i < TAG_SIZE; i++) {
@@ -57,25 +55,25 @@ char* readTag(int sector, char* image) {
     return tag;
 }
 
-void writeTag(int sector, int offset, char data, char* image) {
+void writeTag(int sector, int offset, char data) {
     image[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset] = data;
 }
 
-void writeSector(int sector, int offset, char data, char* image) {
+void writeSector(int sector, int offset, char data) {
     image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset] = data;
 }
 
-void writeToImg(int sector, int offset, int len, char* dataToWrite, char* image) {
+void writeToImg(int sector, int offset, int len, char* dataToWrite) {
     int startIdx = DATA_OFFSET + (sector * SECTOR_SIZE) + offset;
     for (int i = 0; i < len; i++) {
         image[startIdx + i] = dataToWrite[i];
     }
 }
 
-int findDirectorySectors(int* dataToWrite, char* image) {
+int findDirectorySectors(int* dataToWrite) {
     int count = 0;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        char *tag = readTag(i, image);
+        char *tag = readTag(i);
         if (tag[5] == 0x04) {
             dataToWrite[count++] = i;
         }
@@ -84,9 +82,9 @@ int findDirectorySectors(int* dataToWrite, char* image) {
     return count;
 }
 
-int findMDDFSec(char* image) {
+int findMDDFSec() {
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        char *tag = readTag(i, image);
+        char *tag = readTag(i);
         uint16_t type = ((tag[4] & 0xFF) << 8) | (tag[5] & 0xFF);
         if (type == 0x0001) {
             return i;
@@ -96,10 +94,10 @@ int findMDDFSec(char* image) {
     return -1;
 }
 
-int findFsSectors(int* dataToWrite, char* image) {
+int findFsSectors(int* dataToWrite) {
     int count = 0;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        char *tag = readTag(i, image);
+        char *tag = readTag(i);
         if (tag[2] == 0x01) {
             dataToWrite[count++] = i;
         }
@@ -108,8 +106,8 @@ int findFsSectors(int* dataToWrite, char* image) {
     return count;
 }
 
-void printSectorType(int sector, char* image) {
-    char *tag = readTag(sector, image);
+void printSectorType(int sector) {
+    char *tag = readTag(sector);
     uint16_t type = ((tag[4] & 0xFF) << 8) | (tag[5] & 0xFF);
     // thanks, Ray
     if (type == 0xAAAA) {
@@ -135,27 +133,27 @@ void printSectorType(int sector, char* image) {
     }
 }
 
-bool isFreeSector(int sector, char* image) {
-    char *tag = readTag(sector, image);
+bool isFreeSector(int sector) {
+    char *tag = readTag(sector);
     return ((tag[4] & 0xFF) == 0x00) && ((tag[5] & 0xFF) == 0x00);
 }
 
-int countFreeSectors(char *image) {
+int countFreeSectors() {
     int freeCount = 0;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        if (isFreeSector(i, image)) {
+        if (isFreeSector(i)) {
             freeCount++;
         }
     }
     return freeCount;
 }
 
-void listSFileEntries(char *image) {
+void listSFileEntries() {
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        char *tag = readTag(i, image);
+        char *tag = readTag(i);
         if(((tag[4] & 0xFF) == 0x00) && ((tag[5] & 0xFF) == 0x03)) {
             printf("SECTOR = %d\n", i);
-            char *data = readSector(i, image);
+            char *data = readSector(i);
             for (int j = 0; j < (SECTOR_SIZE / 14); j++) { //length of s-record
                 printf("hintAddr = 0x%02X%02X%02X%02X, ", data[(j*14)] & 0xFF, data[(j*14) + 1] & 0xFF, data[(j*14) + 2] & 0xFF, data[(j*14) + 3] & 0xFF);
                 printf("fileAddr = 0x%02X%02X%02X%02X, ", data[(j*14) + 4] & 0xFF, data[(j*14) + 5] & 0xFF, data[(j*14) + 6] & 0xFF, data[(j*14) + 7] & 0xFF);
@@ -166,26 +164,26 @@ void listSFileEntries(char *image) {
     }
 }
 
-void decrementMDDFFreeCount(int MDDFSec, char* image) {
-    char *sec = readSector(MDDFSec, image);
+void decrementMDDFFreeCount(int MDDFSec) {
+    char *sec = readSector(MDDFSec);
     uint32_t freeCount = ((sec[0xBA] & 0xFF) << 24) | ((sec[0xBB] & 0xFF) << 16) | ((sec[0xBC] & 0xFF) << 8) | ((sec[0xBD] & 0xFF));
     uint32_t fcm = freeCount - 1;
     printf("Decrementing free count. Was %u (0x%02X), now %u (0x%02X)\n", freeCount, freeCount, fcm, fcm);
     freeCount--;
-    writeSector(MDDFSec, 0xBA, (freeCount >> 24) & 0xFF, image);
-    writeSector(MDDFSec, 0xBB, (freeCount >> 16) & 0xFF, image);
-    writeSector(MDDFSec, 0xBC, (freeCount >> 8) & 0xFF, image);
-    writeSector(MDDFSec, 0xBD, freeCount & 0xFF, image);
+    writeSector(MDDFSec, 0xBA, (freeCount >> 24) & 0xFF);
+    writeSector(MDDFSec, 0xBB, (freeCount >> 16) & 0xFF);
+    writeSector(MDDFSec, 0xBC, (freeCount >> 8) & 0xFF);
+    writeSector(MDDFSec, 0xBD, freeCount & 0xFF);
 }
 
-char calculateChecksum(int sector, char* image) {
+char calculateChecksum(int sector) {
     char checksumByte = 0x00;
-    char* data = readSector(sector, image);
+    char* data = readSector(sector);
     for (int i = 0; i < SECTOR_SIZE; i++) {
         checksumByte = checksumByte ^ (data[i] & 0xFF);
     }
 
-    char* tag = readTag(sector, image);
+    char* tag = readTag(sector);
     for (int i = 0; i < TAG_SIZE; i++) {
         if (i != 11) { //the checksum byte isn't included
             checksumByte = checksumByte ^ (tag[i] & 0xFF);
@@ -196,54 +194,54 @@ char calculateChecksum(int sector, char* image) {
 }
 
 // returns the first sector of the 4
-int claimNextFreeDirectoryBlock(int MDDFSec, char *image) {
+int claimNextFreeDirectoryBlock(int MDDFSec) {
     for (int i = DIRECTORY_SEC_OFFSET; i < SECTORS_IN_DISK; i += 4) { //let's start looking after where the directories tend to begin
-        if (isFreeSector(i, image) && isFreeSector(i + 1, image) && isFreeSector(i + 2, image) && isFreeSector(i + 3, image)) {
+        if (isFreeSector(i) && isFreeSector(i + 1) && isFreeSector(i + 2) && isFreeSector(i + 3)) {
             for (int j = 0; j < 4; j++) {
                 // inscribe the ancient sigil 0x0004 (and other common things) into the tags for these sectors to claim them as directory sectors
                 // TODO: more may be needed here
-                writeTag(i+j, 0, 0x00, image);
-                writeTag(i+j, 1, 0x00, image);
-                writeTag(i+j, 2, 0x00, image);
-                writeTag(i+j, 3, 0x00, image);
-                writeTag(i+j, 4, 0x00, image);
-                writeTag(i+j, 5, 0x04, image);
-                writeTag(i+j, 6, 0x82, image);
-                writeTag(i+j, 7, 0x00, image);
-                writeTag(i+j, 8, 0x00, image);
-                writeTag(i+j, 9, 0x00, image);
-                writeTag(i+j, 12, 0x00, image);
-                writeTag(i+j, 13, j, image);
+                writeTag(i+j, 0, 0x00);
+                writeTag(i+j, 1, 0x00);
+                writeTag(i+j, 2, 0x00);
+                writeTag(i+j, 3, 0x00);
+                writeTag(i+j, 4, 0x00);
+                writeTag(i+j, 5, 0x04);
+                writeTag(i+j, 6, 0x82);
+                writeTag(i+j, 7, 0x00);
+                writeTag(i+j, 8, 0x00);
+                writeTag(i+j, 9, 0x00);
+                writeTag(i+j, 12, 0x00);
+                writeTag(i+j, 13, j);
                 if (j == 3) {
-                    writeTag(i+j, 14, 0xFF, image);
-                    writeTag(i+j, 15, 0xFF, image);
-                    writeTag(i+j, 16, 0xFF, image);
+                    writeTag(i+j, 14, 0xFF);
+                    writeTag(i+j, 15, 0xFF);
+                    writeTag(i+j, 16, 0xFF);
                 } else {
-                    writeTag(i+j, 14, 0x00, image);
-                    writeTag(i+j, 15, 0x00, image);
+                    writeTag(i+j, 14, 0x00);
+                    writeTag(i+j, 15, 0x00);
                 }
                 if (j == 0) {
-                    writeTag(i+j, 17, 0xFF, image);
-                    writeTag(i+j, 18, 0xFF, image);
-                    writeTag(i+j, 19, 0xFF, image);
+                    writeTag(i+j, 17, 0xFF);
+                    writeTag(i+j, 18, 0xFF);
+                    writeTag(i+j, 19, 0xFF);
                 }
             }
             // "tomorrow I want you to take those sectors to Anchorhead and have their memory erased. They belong to us now"
             for (int j = 0; j < SECTOR_SIZE; j++) {
-                writeSector(i, j, 0xFF, image); 
-                writeSector(i+1, j, 0xFF, image);
-                writeSector(i+2, j, 0xFF, image);
-                writeSector(i+3, j, 0xFF, image);
+                writeSector(i, j, 0xFF); 
+                writeSector(i+1, j, 0xFF);
+                writeSector(i+2, j, 0xFF);
+                writeSector(i+3, j, 0xFF);
             }
             // inscribe the ancient sigil 0x240000 into the start of the first sector to label it as a directory sector
-            writeSector(i, 0, 0x24, image);
-            writeSector(i, 1, 0x00, image);
-            writeSector(i, 2, 0x00, image);
+            writeSector(i, 0, 0x24);
+            writeSector(i, 1, 0x00);
+            writeSector(i, 2, 0x00);
 
-            //TODO decrementMDDFFreeCount(MDDFSec, image);
-            //TODO decrementMDDFFreeCount(MDDFSec, image);
-            //TODO decrementMDDFFreeCount(MDDFSec, image);
-            //TODO decrementMDDFFreeCount(MDDFSec, image);
+            //TODO decrementMDDFFreeCount(MDDFSec);
+            //TODO decrementMDDFFreeCount(MDDFSec);
+            //TODO decrementMDDFFreeCount(MDDFSec);
+            //TODO decrementMDDFFreeCount(MDDFSec);
 
             return i;
         }
@@ -252,45 +250,45 @@ int claimNextFreeDirectoryBlock(int MDDFSec, char *image) {
 }
 
 //returns the sector index
-int claimNextFreeFSSector(int MDDFSec, int lastUsedFSIndex, char *image) {
+int claimNextFreeFSSector(int MDDFSec, int lastUsedFSIndex) {
     for (int i = DIRECTORY_SEC_OFFSET; i < SECTORS_IN_DISK; i += 1) { //let's start looking after where the directories tend to begin
-        if (isFreeSector(i, image)) {
+        if (isFreeSector(i)) {
             int index = lastUsedFSIndex - 1;
             // inscribe the ancient sigil 0x0001 (and other things) into the tags for this sector to claim it as an FS sector
             // TODO: more may be needed here
-            writeTag(i, 0, 0x00, image);
-            writeTag(i, 1, 0x00, image);
-            writeTag(i, 2, 0x01, image);
-            writeTag(i, 3, 0x00, image);
-            writeTag(i, 4, (index >> 8) & 0xFF, image);
-            writeTag(i, 5, index & 0xFF, image);
-            writeTag(i, 6, 0x80, image);
-            writeTag(i, 7, 0x00, image);
-            writeTag(i, 8, 0x00, image);
-            writeTag(i, 9, 0x00, image);
-            writeTag(i, 12, 0x00, image);
-            writeTag(i, 13, 0x00, image);
-            writeTag(i, 14, 0xFF, image);
-            writeTag(i, 15, 0xFF, image);
-            writeTag(i, 16, 0xFF, image);
-            writeTag(i, 17, 0xFF, image);
-            writeTag(i, 18, 0xFF, image);
-            writeTag(i, 19, 0xFF, image);
+            writeTag(i, 0, 0x00);
+            writeTag(i, 1, 0x00);
+            writeTag(i, 2, 0x01);
+            writeTag(i, 3, 0x00);
+            writeTag(i, 4, (index >> 8) & 0xFF);
+            writeTag(i, 5, index & 0xFF);
+            writeTag(i, 6, 0x80);
+            writeTag(i, 7, 0x00);
+            writeTag(i, 8, 0x00);
+            writeTag(i, 9, 0x00);
+            writeTag(i, 12, 0x00);
+            writeTag(i, 13, 0x00);
+            writeTag(i, 14, 0xFF);
+            writeTag(i, 15, 0xFF);
+            writeTag(i, 16, 0xFF);
+            writeTag(i, 17, 0xFF);
+            writeTag(i, 18, 0xFF);
+            writeTag(i, 19, 0xFF);
             // "tomorrow I want you to take that sector to Anchorhead and have its memory erased. It belongs to us now"
             for (int j = 0; j < SECTOR_SIZE; j++) {
-                writeSector(i, j, 0x00, image); 
+                writeSector(i, j, 0x00); 
             }
-            //TODO decrementMDDFFreeCount(MDDFSec, image);
+            //TODO decrementMDDFFreeCount(MDDFSec);
             return i;
         }
     }
     return -1;
 }
 
-int findLastUsedFSIndex(char *image) {
+int findLastUsedFSIndex() {
     int lastUsedIndex = 0xFFFB; //seems to be where these start
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        char *tag = readTag(i, image);
+        char *tag = readTag(i);
         if (tag[2] == 0x01) { //seems to be the way to identify these blocks
             int index = ((tag[4] & 0xFF) << 8) | (tag[5] & 0xFF);
             if (index < lastUsedIndex) {
@@ -301,10 +299,10 @@ int findLastUsedFSIndex(char *image) {
     return lastUsedIndex;
 }
 
-int findNewDirectoryEntryOffset(int numDirSecs, int *directorySectors, char *image) {
+int findNewDirectoryEntryOffset(int numDirSecs, int *directorySectors) {
     for (int i = 0; i < numDirSecs; i += 4) { //in all the possible directorySectors. They come in 4s, always
         int dirSec = directorySectors[i];
-        char *sec = read4Sectors(dirSec, image);
+        char *sec = read4Sectors(dirSec);
         if (!(sec[0] == 0x24 && sec[1] == 0x00 && sec[2] == 0x00)) {
             continue; //invalid block
         }
@@ -382,7 +380,7 @@ fileUnused = 4 bytes
 00000000
 */
 
-void writeDirectoryEntry(int offset, char *image) {
+void writeDirectoryEntry(int offset) {
     int len = 64; //length of a directory entry
     char entry[] = {
         0x24, //length of name with padding
@@ -417,7 +415,7 @@ _ = (standardized? Check more examples?)
 ! = Sector offset to first sector of data (- 0x26)
 */
 
-void writeFSEntry(int sector, char *image) {
+void writeFSEntry(int sector) {
     char entry[] = {
         0x0D, //name length
         'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', //filename
@@ -440,29 +438,29 @@ void writeFSEntry(int sector, char *image) {
         0x01 //number of sectors (again?)
     }; 
     for (int i = 0; i < 142; i++) { //bytes we have to write
-        writeSector(sector, i, entry[i], image);
+        writeSector(sector, i, entry[i]);
     }
 }
 
-void incrementMDDFFileCount(int MDDFSec, char* image) {
-    char *sec = readSector(MDDFSec, image);
+void incrementMDDFFileCount(int MDDFSec) {
+    char *sec = readSector(MDDFSec);
     int fileCount = ((sec[0xB0] & 0xFF) << 8) | (sec[0xB1] & 0xFF);
     fileCount++;
-    //writeSector(MDDFSec, 0xB0, (fileCount >> 8) & 0xFF, image);
-    //writeSector(MDDFSec, 0xB1, fileCount & 0xFF, image);
+    //writeSector(MDDFSec, 0xB0, (fileCount >> 8) & 0xFF);
+    //writeSector(MDDFSec, 0xB1, fileCount & 0xFF);
 
     // this is a mystery byte - but it looks like it increments, so we'll do that too.
     //char c = sec[0x9F] & 0xFF;
-    //writeSector(MDDFSec, 0x9F, (++c & 0xFF), image);
+    //writeSector(MDDFSec, 0x9F, (++c & 0xFF));
 }
 
-void fixAllTagChecksums(char *image) {
+void fixAllTagChecksums() {
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        char *tag = readTag(i, image);
-        char checksum = calculateChecksum(i, image);
+        char *tag = readTag(i);
+        char checksum = calculateChecksum(i);
         if ((checksum & 0xFF) != (tag[11] & 0xFF)) {
             printf("Checksum invalid for sector %d. Fixing...\n", i);
-            writeTag(i, 11, (checksum & 0xFF), image);
+            writeTag(i, 11, (checksum & 0xFF));
         }
     }
 }
@@ -470,21 +468,21 @@ void fixAllTagChecksums(char *image) {
 int main (int argc, char *argv[]) {
     FILE *output = fopen("WS_new.dc42", "w");
 
-    char *image = readFile();
+    readFile();
 
     int *directorySectors = (int *) malloc(24 * sizeof(int)); // for now, support up to 24 directory sectors
     int *fsSectors = (int *) malloc(200 * sizeof(int)); // for now, support up to 200 fs sectors
 
-    int numDirSecs = findDirectorySectors(directorySectors, image);
-    int numFsSecs = findFsSectors(fsSectors, image);
+    int numDirSecs = findDirectorySectors(directorySectors);
+    int numFsSecs = findFsSectors(fsSectors);
 
-    int freeSectors = countFreeSectors(image);
+    int freeSectors = countFreeSectors();
     printf("Free sectors in disk: %d\n", freeSectors);
 
     for (int i = 0; i < 100; i++) {
-        char calculatedChecksum = calculateChecksum(i, image);
+        char calculatedChecksum = calculateChecksum(i);
         printf("sec %d (0x%02X) with chksum 0x%02X:", i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
-        char *tag = readTag(i, image);
+        char *tag = readTag(i);
         int fsSector = 0;
         int directorySector = 0;
         for (int j = 0; j < TAG_SIZE; j++) {
@@ -497,11 +495,11 @@ int main (int argc, char *argv[]) {
             }
         }
         printf(" ");
-        printSectorType(i, image);
+        printSectorType(i);
         printf("\n");
     }
 
-    listSFileEntries(image);
+    listSFileEntries();
 
     printf("Found the following directory sectors:\n");
     for (int i = 0; i < numDirSecs; i++) {
@@ -515,31 +513,31 @@ int main (int argc, char *argv[]) {
     }
     printf("\n");
 
-    int MDDFSec = findMDDFSec(image);
+    int MDDFSec = findMDDFSec();
     printf("Found the MDDF at sector = %d\n", MDDFSec);
 
-    int offset = findNewDirectoryEntryOffset(numDirSecs, directorySectors, image);
+    int offset = findNewDirectoryEntryOffset(numDirSecs, directorySectors);
     while (offset == -1) {
         printf("No space found for a new entry. Creating some...\n");
-        int nextFreeBlock = claimNextFreeDirectoryBlock(MDDFSec, image);
+        int nextFreeBlock = claimNextFreeDirectoryBlock(MDDFSec);
         printf("Space to create new directory block claimed at sector = %d\n", nextFreeBlock);
-        int numDirSecs = findDirectorySectors(directorySectors, image); //recalc this as we've just obtained some new ones
-        offset = findNewDirectoryEntryOffset(numDirSecs, directorySectors, image);
+        int numDirSecs = findDirectorySectors(directorySectors); //recalc this as we've just obtained some new ones
+        offset = findNewDirectoryEntryOffset(numDirSecs, directorySectors);
     }
     printf("Found space for a new directory entry at offset 0x%X\n", offset);
 
-    int lastUsedFSIndex = findLastUsedFSIndex(image);
+    int lastUsedFSIndex = findLastUsedFSIndex();
 
-    writeDirectoryEntry(offset, image);
+    writeDirectoryEntry(offset);
 
-    int sector = claimNextFreeFSSector(MDDFSec, lastUsedFSIndex, image);
-    lastUsedFSIndex = findLastUsedFSIndex(image);
+    int sector = claimNextFreeFSSector(MDDFSec, lastUsedFSIndex);
+    lastUsedFSIndex = findLastUsedFSIndex();
     //printf("Space to create new FS sector claimed at = %d\n", sector);
-    writeFSEntry(sector, image);
+    writeFSEntry(sector);
     //TODO fix tags for file data
     //TODO write file data
 
-    incrementMDDFFileCount(MDDFSec, image);
+    incrementMDDFFileCount(MDDFSec);
 
     //TODO test writing s-file entries. If this works, write a function for it
     char toWriteTest[] = {
@@ -548,14 +546,14 @@ int main (int argc, char *argv[]) {
         0x00, 0x00, 0x02, 0x00,
         0x00, 0x00,
     }; 
-    writeToImg(43, 0x188, 14, toWriteTest, image);
+    writeToImg(43, 0x188, 14, toWriteTest);
     
 
     fwrite(image, 1, FILE_LENGTH, output);
 
-    fixAllTagChecksums(image);
+    fixAllTagChecksums();
 
-    freeSectors = countFreeSectors(image);
+    freeSectors = countFreeSectors();
     printf("Free sectors in disk: %d\n", freeSectors);
 
     fclose(output);
