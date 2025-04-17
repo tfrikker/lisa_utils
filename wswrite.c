@@ -244,11 +244,11 @@ void writeHintEntry(int sector) {
     writeSectorLong(sector, 104, 0x206E000C); // standardized (?)
     writeSectorLong(sector, 108, 0x00000001); // standardized (?)
 
-    writeSectorInt(sector, 130, 0x0001); // number of sectors
+    writeSectorInt(sector, 130, 0x0004); // number of sectors
     writeSectorLong(sector, 132, 0x00090001); // standardized (?)
 
-    writeSectorInt(sector, 138, 0x2200); // offset to first sector of data (-0x26)
-    writeSectorInt(sector, 140, 0x0001); // number of sectors, again (?)
+    writeSectorInt(sector, 138, 0x1351); // offset to first sector of data (-0x26)
+    writeSectorInt(sector, 140, 0x0004); // number of sectors, again (?)
 
     printf("Wrote hint sector at sec=0x%08X\n", sector);
 }
@@ -348,8 +348,8 @@ uint16_t claimNextFreeSFileIndex() {
             printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X\n", lastIdx + 1, s);
             //TODO responsibleSector could overflow to the next one if we're unlucky. For now, don't worry about it.
             writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite, s - (0x26)); //location of our hint sector
-            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 4, 0x00002200); //TODO fileAddr - for now, hardcoded as sector 0x2200 (+0x26))
-            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 8, 0x00000200); //TODO fileSize (hard-coded as 1 sector for now)
+            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 4, 0x00001351); //TODO fileAddr - for now, hardcoded as sector 0x1351 (+0x26))
+            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 8, 0x00000800); //TODO fileSize (hard-coded as 4 sectors for now)
             writeSectorInt(sFileSectorToWrite, indexWithinSectorToWrite + 12, 0x0000); //version
 
             claimNextFreeHintSector(s);
@@ -584,8 +584,8 @@ void writeCatalogEntry(int offset, int nextFreeSFileIndex) {
         (nextFreeSFileIndex >> 8) & 0xFF, nextFreeSFileIndex & 0xFF, //sfile
         0x9D, 0x27, 0xFA, 0x88, //creation date (this one is random but I know it works)
         0x9D, 0x27, 0xFA, 0x8F, //modification date (this one is random but I know it works)
-        0x00, 0x00, 0x02, 0x00, //file size (TODO: I actually need to fix this one. For now: 1 sector, exactly)
-        0x00, 0x00, 0x02, 0x00, // physical file size (?) (make it the same as the previous. For now: 1 sector, exactly)
+        0x00, 0x00, 0x08, 0x00, //file size (TODO: I actually need to fix this one. For now: 4 sectors, exactly)
+        0x00, 0x00, 0x08, 0x00, // physical file size (?) (make it the same as the previous. For now: 4 sectors, exactly)
         0x00, 0x01, //fsOvrhd (? - I know this one works so let's just use it for now),
         0x00, 0x00, //flags
         0x00, 0x00, 0x00, 0x00 //fileUnused
@@ -655,22 +655,87 @@ int main (int argc, char *argv[]) {
 
     //TODO write file data
     //TODO test writing tag entry for data block. If this works, write a function for it.
-    writeTagInt(0x2226, 0, 0x0000); //version (2 bytes)
-    writeTagInt(0x2226, 2, 0x0000); //vol (2 bytes)
-    writeTagInt(0x2226, 4, sfileid); //file ID (2 bytes)
-    writeTagInt(0x2226, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
-    writeTag(0x2226, 8, 0x00); //abspage (3 bytes. The sector, 0x26? check this)
-    writeTag(0x2226, 9, 0x22); 
-    writeTag(0x2226, 10, 0x00); 
-    writeTag(0x2226, 11, 0x00); // checksum (1 byte - will be fixed later)
-    writeTagInt(0x2226, 12, 0x0000); // relpage (2 bytes. 0x00 in this case, since we're a 1 sector piece of data)
-    writeTag(0x2226, 14, 0xFF); // fwdlink (3 bytes. 0xFFFFFF says none)
-    writeTag(0x2226, 15, 0xFF);
-    writeTag(0x2226, 16, 0xFF);
-    writeTag(0x2226, 17, 0xFF); // bkwdlink (3 bytes. 0xFFFFFF says none)
-    writeTag(0x2226, 18, 0xFF);
-    writeTag(0x2226, 19, 0xFF);
-    fixFreeBitmap(0x2226);
+    writeTagInt(0x1377, 0, 0x0000); //version (2 bytes)
+    writeTagInt(0x1377, 2, 0x0000); //vol (2 bytes) (TODO: Lisa seems to say 0x2F00)
+    writeTagInt(0x1377, 4, sfileid); //file ID (2 bytes)
+    writeTagInt(0x1377, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
+    writeTag(0x1377, 8, 0x00); //abspage (3 bytes. The sector-0x26)
+    writeTag(0x1377, 9, 0x13); 
+    writeTag(0x1377, 10, 0x51); 
+    writeTag(0x1377, 11, 0x00); // checksum (1 byte - will be fixed later)
+    writeTagInt(0x1377, 12, 0x0000); // relpage (2 bytes)
+    writeTag(0x1377, 14, 0x00); // fwdlink (3 bytes. 0xFFFFFF says none)
+    writeTag(0x1377, 15, 0x13);
+    writeTag(0x1377, 16, 0x52);
+    writeTag(0x1377, 17, 0xFF); // bkwdlink (3 bytes. 0xFFFFFF says none)
+    writeTag(0x1377, 18, 0xFF);
+    writeTag(0x1377, 19, 0xFF);
+    fixFreeBitmap(0x1377);
+
+    writeTagInt(0x1378, 0, 0x0000); //version (2 bytes)
+    writeTagInt(0x1378, 2, 0x0000); //vol (2 bytes)
+    writeTagInt(0x1378, 4, sfileid); //file ID (2 bytes)
+    writeTagInt(0x1378, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
+    writeTag(0x1378, 8, 0x00); //abspage (3 bytes. The sector-0x26)
+    writeTag(0x1378, 9, 0x13); 
+    writeTag(0x1378, 10, 0x52); 
+    writeTag(0x1378, 11, 0x00); // checksum (1 byte - will be fixed later)
+    writeTagInt(0x1378, 12, 0x0001); // relpage (2 bytes)
+    writeTag(0x1378, 14, 0x00); // fwdlink (3 bytes. 0xFFFFFF says none)
+    writeTag(0x1378, 15, 0x13);
+    writeTag(0x1378, 16, 0x53);
+    writeTag(0x1378, 17, 0x00); // bkwdlink (3 bytes. 0xFFFFFF says none)
+    writeTag(0x1378, 18, 0x13);
+    writeTag(0x1378, 19, 0x51);
+    fixFreeBitmap(0x1378);
+
+    writeTagInt(0x1379, 0, 0x0000); //version (2 bytes)
+    writeTagInt(0x1379, 2, 0x0000); //vol (2 bytes)
+    writeTagInt(0x1379, 4, sfileid); //file ID (2 bytes)
+    writeTagInt(0x1379, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
+    writeTag(0x1379, 8, 0x00); //abspage (3 bytes. The sector-0x26)
+    writeTag(0x1379, 9, 0x13); 
+    writeTag(0x1379, 10, 0x53); 
+    writeTag(0x1379, 11, 0x00); // checksum (1 byte - will be fixed later)
+    writeTagInt(0x1379, 12, 0x0002); // relpage (2 bytes)
+    writeTag(0x1379, 14, 0x00); // fwdlink (3 bytes. 0xFFFFFF says none)
+    writeTag(0x1379, 15, 0x13);
+    writeTag(0x1379, 16, 0x54);
+    writeTag(0x1379, 17, 0x00); // bkwdlink (3 bytes. 0xFFFFFF says none)
+    writeTag(0x1379, 18, 0x13);
+    writeTag(0x1379, 19, 0x52);
+    fixFreeBitmap(0x1379);
+
+    writeTagInt(0x137A, 0, 0x0000); //version (2 bytes)
+    writeTagInt(0x137A, 2, 0x0000); //vol (2 bytes)
+    writeTagInt(0x137A, 4, sfileid); //file ID (2 bytes)
+    writeTagInt(0x137A, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
+    writeTag(0x137A, 8, 0x00); //abspage (3 bytes. The sector-0x26)
+    writeTag(0x137A, 9, 0x13); 
+    writeTag(0x137A, 10, 0x54); 
+    writeTag(0x137A, 11, 0x00); // checksum (1 byte - will be fixed later)
+    writeTagInt(0x137A, 12, 0x0003); // relpage (2 bytes)
+    writeTag(0x137A, 14, 0xFF); // fwdlink (3 bytes. 0xFFFFFF says none)
+    writeTag(0x137A, 15, 0xFF);
+    writeTag(0x137A, 16, 0xFF);
+    writeTag(0x137A, 17, 0x00); // bkwdlink (3 bytes. 0xFFFFFF says none)
+    writeTag(0x137A, 18, 0x13);
+    writeTag(0x137A, 19, 0x53);
+    fixFreeBitmap(0x137A);
+
+    for (int i = 0; i < SECTOR_SIZE; i++) {
+        writeSector(0x1377, i, 0x00);
+        writeSector(0x1378, i, 0x00);
+        writeSector(0x1379, i, 0x00);
+        writeSector(0x137A, i, 0x00);
+    }
+
+
+    //4 sectors of data
+    decrementMDDFFreeCount();
+    decrementMDDFFreeCount();
+    decrementMDDFFreeCount();
+    decrementMDDFFreeCount();
 
     //writeSector(64, SECTOR_SIZE - 11, 0x18); //for testing
     //writeSector(136, SECTOR_SIZE - 11, 0x18); //for testing
