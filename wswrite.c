@@ -70,11 +70,25 @@ void writeToImg(int sector, int offset, int len, char* dataToWrite) {
     }
 }
 
+int findLastDirectoryBlock() {
+    int lastDirectoryBlock = 0;
+    for (int i = 0; i < SECTORS_IN_DISK; i++) {
+        char *tag = readTag(i);
+        if (tag[2] == 0x25 && tag[5] == 0x04) { //0x25 seems to only be set for valid ones here
+            printf("FOUND A DIR START AT %d. Skipping forward 3...\n", i);
+            lastDirectoryBlock = i;
+            i += 3; //zoom past the rest in the block
+        }
+    }
+
+    return lastDirectoryBlock;
+}
+
 int findDirectorySectors(int* dataToWrite) {
     int count = 0;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         char *tag = readTag(i);
-        if (tag[5] == 0x04) {
+        if (tag[2] == 0x25 && tag[5] == 0x04) { //0x25 seems to only be set for valid ones here
             dataToWrite[count++] = i;
         }
     }
@@ -222,6 +236,7 @@ void fixFreeBitmap(int bitmapSec, int sec) {
 
 // returns the first sector of the 4
 int claimNextFreeDirectoryBlock(int bitmapSec, int MDDFSec) {
+    int lastUsedDirSec = findLastDirectoryBlock();
     for (int i = DIRECTORY_SEC_OFFSET; i < SECTORS_IN_DISK; i += 4) { //let's start looking after where the directories tend to begin
         if (isFreeSector(i) && isFreeSector(i + 1) && isFreeSector(i + 2) && isFreeSector(i + 3)) {
             for (int j = 0; j < 4; j++) {
@@ -296,6 +311,26 @@ int claimNextFreeDirectoryBlock(int bitmapSec, int MDDFSec) {
             fixFreeBitmap(bitmapSec, i+2);
             fixFreeBitmap(bitmapSec, i+3);
 
+            /* TODO not sure if this is quite right.
+            //TODO for testing - forward link from the last used directory sector
+            printf("WRITING FORWARD LINK from sector %d (+3) to %d\n", lastUsedDirSec, i);
+            int secToWrite = i - 0x26; //magic number
+            writeSector(lastUsedDirSec+3, SECTOR_SIZE - 6, (secToWrite << 24) & 0xFF);
+            writeSector(lastUsedDirSec+3, SECTOR_SIZE - 5, (secToWrite << 16) & 0xFF);
+            writeSector(lastUsedDirSec+3, SECTOR_SIZE - 4, (secToWrite << 8) & 0xFF);
+            writeSector(lastUsedDirSec+3, SECTOR_SIZE - 3, secToWrite & 0xFF);
+
+            //TODO for testing - backward link to the last directory sector start
+            writeSector(i+3, SECTOR_SIZE - 10, 0x00);
+            writeSector(i+3, SECTOR_SIZE - 9, 0x00);
+            writeSector(i+3, SECTOR_SIZE - 8, 0x00);
+            writeSector(i+3, SECTOR_SIZE - 7, 0x39);
+
+            //0x00FF always ends it
+            writeSector(i+3, SECTOR_SIZE - 2, 0x00);
+            writeSector(i+3, SECTOR_SIZE - 1, 0x00);
+            */
+
             //TODO change file size of FS file in S-records?
             decrementMDDFFreeCount(MDDFSec);
             decrementMDDFFreeCount(MDDFSec);
@@ -312,7 +347,6 @@ int claimNextFreeDirectoryBlock(int bitmapSec, int MDDFSec) {
 int claimNextFreeFSSector(int bitmapSec, int MDDFSec, int lastUsedFSIndex) {
     for (int i = DIRECTORY_SEC_OFFSET; i < SECTORS_IN_DISK; i += 1) { //let's start looking after where the directories tend to begin
         if (isFreeSector(i)) {
-            printf("CREATING NEW FS SECTOR AT %d\n", i);
             int index = lastUsedFSIndex - 1;
             // inscribe the ancient sigil 0x0001 (and other things) into the tags for this sector to claim it as an FS sector
             // TODO: sec 131 (0x10654) 0000 0100 FFC1 8000 00005D D3 0000 FFFFFF FFFFFF  type=FFC1: ????
@@ -357,6 +391,7 @@ int claimNextFreeFSSector(int bitmapSec, int MDDFSec, int lastUsedFSIndex) {
             for (int j = 0; j < SECTOR_SIZE; j++) {
                 writeSector(i, j, 0x00); 
             }
+
             fixFreeBitmap(bitmapSec, i);
 
             //TODO change file size of directory file in S-records?
@@ -408,13 +443,13 @@ int findNewDirectoryEntryOffset(int numDirSecs, int *directorySectors) {
                     }
                 }
                 if (hasName) {
-                    printf("sec=%d,e=%d: used by file: ", dirSec, e);
+                    //printf("sec=%d,e=%d: used by file: ", dirSec, e);
                     for (int k = 0; k < 32; k++) { //number of bytes in a filename
-                        printf("%c", sec[entryOffset + 3 + k]);
+                        //printf("%c", sec[entryOffset + 3 + k]);
                     }
-                    printf(" - s-file = %02X%02X", sec[entryOffset+38] & 0xFF, sec[entryOffset+39] & 0xFF);
-                    printf(" - size = %02X%02X%02X%02X", sec[entryOffset+48] & 0xFF, sec[entryOffset+49] & 0xFF, sec[entryOffset+50] & 0xFF, sec[entryOffset+51] & 0xFF);
-                    printf(" - pSize = %02X%02X%02X%02X\n", sec[entryOffset+52] & 0xFF, sec[entryOffset+53] & 0xFF, sec[entryOffset+54] & 0xFF, sec[entryOffset+55] & 0xFF);
+                    //printf(" - s-file = %02X%02X", sec[entryOffset+38] & 0xFF, sec[entryOffset+39] & 0xFF);
+                    //printf(" - size = %02X%02X%02X%02X", sec[entryOffset+48] & 0xFF, sec[entryOffset+49] & 0xFF, sec[entryOffset+50] & 0xFF, sec[entryOffset+51] & 0xFF);
+                    //printf(" - pSize = %02X%02X%02X%02X\n", sec[entryOffset+52] & 0xFF, sec[entryOffset+53] & 0xFF, sec[entryOffset+54] & 0xFF, sec[entryOffset+55] & 0xFF);
                     continue;
                 } else {
                     return DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
@@ -579,7 +614,7 @@ int main (int argc, char *argv[]) {
         printf("\n");
     }
 
-    listSFileEntries();
+    //listSFileEntries();
 
     printf("Found the following directory sectors:\n");
     for (int i = 0; i < numDirSecs; i++) {
