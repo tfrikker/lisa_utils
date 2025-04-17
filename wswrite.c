@@ -226,31 +226,57 @@ int claimNextFreeDirectoryBlock(int bitmapSec, int MDDFSec) {
         if (isFreeSector(i) && isFreeSector(i + 1) && isFreeSector(i + 2) && isFreeSector(i + 3)) {
             for (int j = 0; j < 4; j++) {
                 // inscribe the ancient sigil 0x0004 (and other common things) into the tags for these sectors to claim them as directory sectors
-                // TODO: more may be needed here
+                // TODO: sec 64  (0x8054) 0000 2500 0004 8200 00001A B1 0003 FFFFFF 000019  (directory)
+                //version
                 writeTag(i+j, 0, 0x00);
                 writeTag(i+j, 1, 0x00);
-                writeTag(i+j, 2, 0x00);
+
+                //volid (TODO 0x2500 seems standard for this disk at least?)
+                writeTag(i+j, 2, 0x25);
                 writeTag(i+j, 3, 0x00);
+
+                //fileid (always 0x0004 for directories)
                 writeTag(i+j, 4, 0x00);
                 writeTag(i+j, 5, 0x04);
+
+                //dataused (0x8200 seems standard)
                 writeTag(i+j, 6, 0x82);
                 writeTag(i+j, 7, 0x00);
-                writeTag(i+j, 8, 0x00);
-                writeTag(i+j, 9, 0x00);
+
+                //abspage
+                int abspage = (i+j) - 0x26; //account for magic offset
+                writeTag(i+j, 8, (abspage >> 16) & 0xFF);
+                writeTag(i+j, 9, (abspage >> 8) & 0xFF);
+                writeTag(i+j, 10, abspage & 0xFF);
+
+                //index 11 is a checksum we'll in later
+
+                //relpage
                 writeTag(i+j, 12, 0x00);
                 writeTag(i+j, 13, j);
+
+                //fwdlink
                 if (j == 3) {
                     writeTag(i+j, 14, 0xFF);
                     writeTag(i+j, 15, 0xFF);
                     writeTag(i+j, 16, 0xFF);
                 } else {
-                    writeTag(i+j, 14, 0x00);
-                    writeTag(i+j, 15, 0x00);
+                    int fwdlink = abspage + 1;
+                    writeTag(i+j, 14, (fwdlink >> 16) & 0xFF);
+                    writeTag(i+j, 15, (fwdlink >> 8) & 0xFF);
+                    writeTag(i+j, 16, fwdlink & 0xFF);
                 }
+
+                //bkwdlink
                 if (j == 0) {
                     writeTag(i+j, 17, 0xFF);
                     writeTag(i+j, 18, 0xFF);
                     writeTag(i+j, 19, 0xFF);
+                } else {
+                    int bkwdlink = abspage - 1;
+                    writeTag(i+j, 17, (bkwdlink >> 16) & 0xFF);
+                    writeTag(i+j, 18, (bkwdlink >> 8) & 0xFF);
+                    writeTag(i+j, 19, bkwdlink & 0xFF);
                 }
             }
             // "tomorrow I want you to take those sectors to Anchorhead and have their memory erased. They belong to us now"
@@ -286,24 +312,44 @@ int claimNextFreeDirectoryBlock(int bitmapSec, int MDDFSec) {
 int claimNextFreeFSSector(int bitmapSec, int MDDFSec, int lastUsedFSIndex) {
     for (int i = DIRECTORY_SEC_OFFSET; i < SECTORS_IN_DISK; i += 1) { //let's start looking after where the directories tend to begin
         if (isFreeSector(i)) {
+            printf("CREATING NEW FS SECTOR AT %d\n", i);
             int index = lastUsedFSIndex - 1;
             // inscribe the ancient sigil 0x0001 (and other things) into the tags for this sector to claim it as an FS sector
-            // TODO: more may be needed here
+            // TODO: sec 131 (0x10654) 0000 0100 FFC1 8000 00005D D3 0000 FFFFFF FFFFFF  type=FFC1: ????
+            //version
             writeTag(i, 0, 0x00);
             writeTag(i, 1, 0x00);
+
+            //volid (TODO 0x0100 seems standard for this type of record at least?)
             writeTag(i, 2, 0x01);
             writeTag(i, 3, 0x00);
+
+            //fileid (seems to decrement)
             writeTag(i, 4, (index >> 8) & 0xFF);
             writeTag(i, 5, index & 0xFF);
+
+            //dataused (0x8000 seems standard)
             writeTag(i, 6, 0x80);
             writeTag(i, 7, 0x00);
-            writeTag(i, 8, 0x00);
-            writeTag(i, 9, 0x00);
+
+            //abspage
+            int abspage = i - 0x26; //account for magic offset
+            writeTag(i, 8, (abspage >> 16) & 0xFF);
+            writeTag(i, 9, (abspage >> 8) & 0xFF);
+            writeTag(i, 10, abspage & 0xFF);
+
+            //index 11 is a checksum we'll in later
+
+            //relpage (0x0000 always)
             writeTag(i, 12, 0x00);
             writeTag(i, 13, 0x00);
+
+            //fwdlink (0xFFFFFF always)
             writeTag(i, 14, 0xFF);
             writeTag(i, 15, 0xFF);
             writeTag(i, 16, 0xFF);
+
+            //bkwdlink (0xFFFFFF always)
             writeTag(i, 17, 0xFF);
             writeTag(i, 18, 0xFF);
             writeTag(i, 19, 0xFF);
@@ -456,22 +502,20 @@ void writeFSEntry(int sector) {
         0x0D, //name length
         'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', //filename
         0x00, //padding
-        '.', 'T', 'e', 'x', 't', //file type
-        0x00, 0x00, 0x00, 0x00, //padding to get to 24 bytes (?)
-        0x00, 0x2E, 0x0B, 0xF8, 0x00, 0x2E, 0x0C, 0x00, 0x00, 0x00, 0x00, 0xCC, 0x5E, 0xD4, //standardized (?)
+        'T', 'e', 'x', 't', //file type
+        0x00, 0x00, 0x00, 0x00, 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,//padding to get to 34 bytes
         0xA2, 0x4A, 0x22, 0x8C, //date (?)
         0x01, 0x00, 0x00, 0x00, 0x00, 0x15, 0x0E, 0x00, //standardized (?)
         0x9D, 0x27, 0xFA, 0xC7, //creation date (should match file)
         0xA2, 0x4A, 0x22, 0xA2, //date (?),
         0x9D, 0x27, 0xFA, 0xCB, //modification date (should match file)
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //standardized 0x00 (?)
-        0x0C, 0x00, 0x54, 0x07, 0x54, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x00, 0x00, 0x4E, 0x56, 0xFE, 0xFC, 0x20, 0x6E, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, //standardized (?)
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //standardized 0x00 (?)
-        0x01, //number of sectors
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,//standardized 0x00 times 44 (?)
+        0x4E, 0x56, 0xFE, 0xFC, 0x20, 0x6E, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, //standardized (?)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //standardized 0x00 (?) times 18
+        0x00, 0x01, //number of sectors
         0x00, 0x09, 0x00, 0x01, 0x00, 0x00, //standardized (?)
         0x22, 0x00, //offset to first sector of data (-0x26)
-        0x00, //padding
-        0x01 //number of sectors (again?)
+        0x00, 0x01 //number of sectors (again?)
     }; 
     for (int i = 0; i < 142; i++) { //bytes we have to write
         writeSector(sector, i, entry[i]);
@@ -515,7 +559,7 @@ int main (int argc, char *argv[]) {
     int freeSectors = countFreeSectors();
     printf("Free sectors in disk: %d\n", freeSectors);
 
-    for (int i = 0; i < 10000; i++) {
+    for (int i = 0; i < 0; i++) {
         char calculatedChecksum = calculateChecksum(i);
         printf("sec %d (0x%02X) with chksum 0x%02X:", i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
         char *tag = readTag(i);
@@ -620,6 +664,26 @@ int main (int argc, char *argv[]) {
     fwrite(image, 1, FILE_LENGTH, output);
 
     fclose(output);
+
+    for (int i = 0; i < 200; i++) {
+        char calculatedChecksum = calculateChecksum(i);
+        printf("sec %d (0x%02X) with chksum 0x%02X:", i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
+        char *tag = readTag(i);
+        int fsSector = 0;
+        int directorySector = 0;
+        for (int j = 0; j < TAG_SIZE; j++) {
+            printf("%02X ", tag[j] & 0xFF);
+            if (j == 2 && tag[j] == 0x01) {
+                fsSector = 1;
+            }
+            if (j == 5 && tag[j] == 0x04) {
+                directorySector = 1;
+            }
+        }
+        printf(" ");
+        printSectorType(i);
+        printf("\n");
+    }
 
     return 0;
 }
