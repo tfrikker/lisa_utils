@@ -18,13 +18,14 @@ const int SECTORS_IN_DISK = 0x2600;  // for 5MB ProFile
 bytes image;
 int MDDFSec;
 int bitmapSec;
+uint16_t lastUsedHintIndex = 0xFFFB; //seems to be where these start
 
 uint16_t readInt(bytes data, int offset) {
     return ((data[offset] & 0xFF) << 8) | ((data[offset+1] & 0xFF));
 }
 
 uint32_t readLong(bytes data, int offset) {
-    return ((data[offset] & 0xFF) << 24) | ((data[offset+1] & 0xFF) << 16) | ((data[offset+2] & 0xFF) << 8) | ((data[offset+2] & 0xFF));
+    return ((data[offset] & 0xFF) << 24) | ((data[offset+1] & 0xFF) << 16) | ((data[offset+2] & 0xFF) << 8) | ((data[offset+3] & 0xFF));
 }
 
 void readFile() {
@@ -179,28 +180,6 @@ bool isFreeSector(int sector) {
     return ((tag[4] & 0xFF) == 0x00) && ((tag[5] & 0xFF) == 0x00);
 }
 
-uint16_t getNextFreeSFileIndex() {
-    uint16_t idx = 0;
-    for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        bytes tag = readTag(i);
-        if(((tag[4] & 0xFF) == 0x00) && ((tag[5] & 0xFF) == 0x03)) {
-            printf("SECTOR = %d\n", i);
-            bytes data = readSector(i);
-            for (int j = 0; j < (SECTOR_SIZE / 14); j++) { //length of s-record
-                if ((data[(j*14)] & 0xFF) == 0x00 && (data[(j*14) + 1] & 0xFF) == 0x00 && (data[(j*14) + 2] & 0xFF) == 0x00 && (data[(j*14) + 3] & 0xFF) == 0x00) {
-                    return idx;
-                }
-                idx++;
-                printf("hintAddr = 0x%02X%02X%02X%02X, ", data[(j*14)] & 0xFF, data[(j*14) + 1] & 0xFF, data[(j*14) + 2] & 0xFF, data[(j*14) + 3] & 0xFF);
-                printf("fileAddr = 0x%02X%02X%02X%02X, ", data[(j*14) + 4] & 0xFF, data[(j*14) + 5] & 0xFF, data[(j*14) + 6] & 0xFF, data[(j*14) + 7] & 0xFF);
-                printf("fileSize = 0x%02X%02X%02X%02X, ", data[(j*14) + 8] & 0xFF, data[(j*14) + 9] & 0xFF, data[(j*14) + 10] & 0xFF, data[(j*14) + 11] & 0xFF);
-                printf("version = 0x%02X%02X\n", data[(j*14) + 12] & 0xFF, data[(j*14) + 13] & 0xFF);
-            }
-        }
-    }
-    return 0xFF; //not found
-}
-
 void decrementMDDFFreeCount() {
     bytes sec = readSector(MDDFSec);
     uint32_t freeCount = readLong(sec, 0xBA);
@@ -208,6 +187,150 @@ void decrementMDDFFreeCount() {
     printf("Decrementing free count. Was %u (0x%02X), now %u (0x%02X)\n", freeCount, freeCount, fcm, fcm);
     freeCount--;
     writeSectorLong(MDDFSec, 0xBA, freeCount);
+}
+
+//TODO there is a bug here. Fix it!
+void fixFreeBitmap(int sec) {
+    bool free7 = !isFreeSector(sec);
+    bool free6 = !isFreeSector(sec+1); //todo might be wrong. Don't overdo it - hidden files?
+    bool free5 = !isFreeSector(sec+2);
+    bool free4 = !isFreeSector(sec+3);
+    bool free3 = !isFreeSector(sec+4);
+    bool free2 = !isFreeSector(sec+5);
+    bool free1 = !isFreeSector(sec+6);
+    bool free0 = !isFreeSector(sec+7);
+    uint8_t byteToWrite = (free0 << 7) | (free1 << 6) | (free2 << 5) | (free3 << 4) | (free4 << 3) | (free5 << 2) | (free6 << 1) | (free7);
+    printf("sec=%d, bitvalue=0x%02X. Writing to sec=%d, %d\n", sec, byteToWrite & 0xFF, bitmapSec + (((sec - 0x26) / 8) / SECTOR_SIZE), ((sec - 0x26) / 8) % SECTOR_SIZE);
+    writeSector(bitmapSec + (((sec - 0x26) / 8) / SECTOR_SIZE), ((sec - 0x26) / 8) % SECTOR_SIZE, byteToWrite & 0xFF);
+}
+
+/*
+AABBBBBB BBBBBBBB BBBBBB00 CCCCCCCC ???????? / ________ ________ ________ ____@@@@ @@@@____ ________ ____DDDD DDDD@@@@ @@@@EEEE EEEE____ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ______## ________ ____!!!! __##____ / (0 until end of 0x200)
+0A7B7B7B 546F6D2E 4F626A00 2E4F626A 00180000 / 002E0BF8 002E0C00 000000CC 5ED4A24A 228C0100 00000015 0E009D27 FAC7A24A 22A29D27 FACB0000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0C005407 54000C00 00000000 4E56FEFC 206E000C 00000001 00000000 00000000 00000000 00000000 0000000A 00090001 00001BF4 000A0000  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
+
+A = name length (bytes)
+B = name 
+C = type (".Obj")
+D = creation date (aligns with catalog listing)
+E = modification date (aligns with catalog listing)
+_ = (standardized? Check more examples?)
+@ = ascending? Looks like a date, maybe?
+# = # of sectors (?)
+! = Sector offset to first sector of data (- 0x26)
+*/
+
+void writeHintEntry(int sector) {
+    uint8_t entry[] = {
+        0x0D, //name length
+        'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', //filename
+        0x00, //padding
+        'T', 'e', 'x', 't', //file type
+        0x00, 0x00, 0x00, 0x00, 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,//padding to get to 34 bytes
+        0xA2, 0x4A, 0x22, 0x8C, //date (?)
+        0x01, 0x00, 0x00, 0x00, 0x00, 0x15, 0x0E, 0x00, //standardized (?)
+        0x9D, 0x27, 0xFA, 0xC7, //creation date (should match file)
+        0xA2, 0x4A, 0x22, 0xA2, //date (?),
+        0x9D, 0x27, 0xFA, 0xCB, //modification date (should match file)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,//standardized 0x00 times 44 (?)
+        0x4E, 0x56, 0xFE, 0xFC, 0x20, 0x6E, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, //standardized (?)
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //standardized 0x00 (?) times 18
+        0x00, 0x01, //number of sectors
+        0x00, 0x09, 0x00, 0x01, 0x00, 0x00, //standardized (?)
+        0x22, 0x00, //offset to first sector of data (-0x26)
+        0x00, 0x01 //number of sectors (again?)
+    }; 
+    for (int i = 0; i < 142; i++) { //bytes we have to write
+        writeSector(sector, i, entry[i]);
+    }
+}
+
+void claimNextFreeHintSector(uint32_t sec) {
+    writeHintEntry(sec);
+
+    // inscribe the ancient sigil 0x0001 (and other things) into the tags for this sector to claim it as a hint sector
+    // TODO: sec 131 (0x10654) 0000 0100 FFC1 8000 00005D D3 0000 FFFFFF FFFFFF  type=FFC1: ????
+    //version
+    writeTagInt(sec, 0, 0x0000);
+
+    //volid (TODO 0x0100 seems standard for this type of record at least?)
+    writeTagInt(sec, 2, 0x0100);
+
+    //fileid (seems to decrement)
+    writeTagInt(sec, 4, lastUsedHintIndex--);
+
+    //dataused (0x8000 seems standard)
+    writeTagInt(sec, 6, 0x8000);
+
+    //abspage
+    int abspage = sec - 0x26; //account for magic offset
+    writeTag(sec, 8, (abspage >> 16) & 0xFF);
+    writeTag(sec, 9, (abspage >> 8) & 0xFF);
+    writeTag(sec, 10, abspage & 0xFF);
+
+    //index 11 is a checksum we'll in later
+
+    //relpage (0x0000 always)
+    writeTagInt(sec, 12, 0x0000);
+
+    //fwdlink (0xFFFFFF always)
+    writeTag(sec, 14, 0xFF);
+    writeTag(sec, 15, 0xFF);
+    writeTag(sec, 16, 0xFF);
+
+    //bkwdlink (0xFFFFFF always)
+    writeTag(sec, 17, 0xFF);
+    writeTag(sec, 18, 0xFF);
+    writeTag(sec, 19, 0xFF);
+    // "tomorrow I want you to take that sector to Anchorhead and have its memory erased. It belongs to us now"
+    for (int j = 0; j < SECTOR_SIZE; j++) {
+        writeSector(sec, j, 0x00); 
+    }
+
+    fixFreeBitmap(sec);
+
+    //TODO change file size of catalog file in S-records?
+    decrementMDDFFreeCount();
+}
+
+//returns the index of the s-file (the file ID)
+uint16_t claimNextFreeSFileIndex() {
+    uint16_t idx = 0;
+    for (int i = 0; i < SECTORS_IN_DISK; i++) {
+        bytes tag = readTag(i);
+        uint16_t fileId = readInt(tag, 4);
+        if (fileId == 0x0003) {
+            bytes data = readSector(i);
+            for (int srec = 0; srec < SECTOR_SIZE; srec += 14) { //length of s-record
+                uint32_t hintAddr = readLong(data, srec);
+                uint32_t fileAddr = readLong(data, srec + 4);
+                uint32_t fileSize = readLong(data, srec + 8);
+                uint16_t version = readInt(data, srec + 12);
+                printf("hintAddr = 0x%08X, ", hintAddr);
+                printf("fileAddr = 0x%08X, ", fileAddr);
+                printf("fileSize = 0x%08X, ", fileSize);
+                printf("version = 0x%04X\n", version);
+                if (hintAddr == 0x00000000) { //unclaimed s-record
+                    //claim it and return it
+                    for (int s = 0x26; s < SECTORS_IN_DISK; s++) {
+                        if (isFreeSector(s)) {
+                            printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X\n", idx, s);
+
+                            writeSectorLong(i, srec, s - (0x26)); //location of our hint sector
+                            writeSectorLong(i, srec + 4, 0x00002200); //TODO fileAddr - for now, hardcoded as sector 0x2200 (+0x26))
+                            writeSectorLong(i, srec + 8, 0x00000200); //TODO fileSize (hard-coded as 1 sector for now)
+                            writeSectorInt(i, srec + 12, 0x0000); //version
+
+                            claimNextFreeHintSector(s);
+                            return idx;
+                        }
+                    }
+                    return -1; // no space
+                }
+                idx++;
+            }
+        }
+    }
+    return -1; //not found
 }
 
 uint8_t calculateChecksum(int sector) {
@@ -225,21 +348,6 @@ uint8_t calculateChecksum(int sector) {
     }
 
     return checksumByte;
-}
-
-//TODO there is a bug here. Fix it!
-void fixFreeBitmap(int sec) {
-    bool free7 = !isFreeSector(sec);
-    bool free6 = !isFreeSector(sec+1); //todo might be wrong. Don't overdo it - hidden files?
-    bool free5 = !isFreeSector(sec+2);
-    bool free4 = !isFreeSector(sec+3);
-    bool free3 = !isFreeSector(sec+4);
-    bool free2 = !isFreeSector(sec+5);
-    bool free1 = !isFreeSector(sec+6);
-    bool free0 = !isFreeSector(sec+7);
-    uint8_t byteToWrite = (free0 << 7) | (free1 << 6) | (free2 << 5) | (free3 << 4) | (free4 << 3) | (free5 << 2) | (free6 << 1) | (free7);
-    printf("sec=%d, bitvalue=0x%02X. Writing to sec=%d, %d\n", sec, byteToWrite & 0xFF, bitmapSec + (((sec - 0x26) / 8) / SECTOR_SIZE), ((sec - 0x26) / 8) % SECTOR_SIZE);
-    writeSector(bitmapSec + (((sec - 0x26) / 8) / SECTOR_SIZE), ((sec - 0x26) / 8) % SECTOR_SIZE, byteToWrite & 0xFF);
 }
 
 // returns the first sector of the 4
@@ -347,76 +455,17 @@ int claimNextFreeCatalogBlock() {
     return -1;
 }
 
-//returns the sector index
-int claimNextFreeHintSector(int lastUsedHintIndex) {
-    //for (int i = CATALOG_SEC_OFFSET; i < SECTORS_IN_DISK; i += 1) { //let's start looking after where the directories tend to begin
-    //    if (isFreeSector(i)) {
-    int i = 0x5E + 0x26; //for now, hard-coded to match s-file record
-    if (!isFreeSector(i)) {
-        return -1; //TODO this is a possible failure state, Check this later.
-    }
-            int index = lastUsedHintIndex - 1;
-            // inscribe the ancient sigil 0x0001 (and other things) into the tags for this sector to claim it as a hint sector
-            // TODO: sec 131 (0x10654) 0000 0100 FFC1 8000 00005D D3 0000 FFFFFF FFFFFF  type=FFC1: ????
-            //version
-            writeTagInt(i, 0, 0x0000);
-
-            //volid (TODO 0x0100 seems standard for this type of record at least?)
-            writeTagInt(i, 2, 0x0100);
-
-            //fileid (seems to decrement)
-            writeTagInt(i, 4, index);
-
-            //dataused (0x8000 seems standard)
-            writeTagInt(i, 6, 0x8000);
-
-            //abspage
-            int abspage = i - 0x26; //account for magic offset
-            writeTag(i, 8, (abspage >> 16) & 0xFF);
-            writeTag(i, 9, (abspage >> 8) & 0xFF);
-            writeTag(i, 10, abspage & 0xFF);
-
-            //index 11 is a checksum we'll in later
-
-            //relpage (0x0000 always)
-            writeTagInt(i, 12, 0x0000);
-
-            //fwdlink (0xFFFFFF always)
-            writeTag(i, 14, 0xFF);
-            writeTag(i, 15, 0xFF);
-            writeTag(i, 16, 0xFF);
-
-            //bkwdlink (0xFFFFFF always)
-            writeTag(i, 17, 0xFF);
-            writeTag(i, 18, 0xFF);
-            writeTag(i, 19, 0xFF);
-            // "tomorrow I want you to take that sector to Anchorhead and have its memory erased. It belongs to us now"
-            for (int j = 0; j < SECTOR_SIZE; j++) {
-                writeSector(i, j, 0x00); 
-            }
-
-            fixFreeBitmap(i);
-
-            //TODO change file size of catalog file in S-records?
-            decrementMDDFFreeCount();
-            return i;
-    //    }
-    //}
-    return -1;
-}
-
-int findLastUsedHintIndex() {
-    int lastUsedIndex = 0xFFFB; //seems to be where these start
+void findLastUsedHintIndex() {
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
         if (tag[2] == 0x01) { //seems to be the way to identify these blocks
             uint16_t index = readInt(tag, 4);
-            if (index < lastUsedIndex) {
-                lastUsedIndex = index;
+            if (index < lastUsedHintIndex) {
+                lastUsedHintIndex = index;
+                return;
             }
         }
     }
-    return lastUsedIndex;
 }
 
 int findNewCatalogEntryOffset(int numDirSecs, int *catalogSectors) {
@@ -464,6 +513,17 @@ int findNewCatalogEntryOffset(int numDirSecs, int *catalogSectors) {
     }
 
     return -1; //no space found
+}
+
+void incrementMDDFFileCount() {
+    bytes sec = readSector(MDDFSec);
+    uint16_t fileCount = readInt(sec, 0xB0);
+    fileCount++;
+    writeSectorInt(MDDFSec, 0xB0, fileCount);
+
+    // empty files (technically 2 bytes at 0x9E) increments when you create an s-file. see new_sfile().
+    uint8_t c = sec[0x9F] & 0xFF;
+    writeSector(MDDFSec, 0x9F, (++c & 0xFF));
 }
 
 /*
@@ -518,57 +578,7 @@ void writeCatalogEntry(int offset, int nextFreeSFileIndex) {
     for (int i = 0; i < len; i++) {
         image[offset + i] = entry[i];
     }
-}
-
-/*
-AABBBBBB BBBBBBBB BBBBBB00 CCCCCCCC ???????? / ________ ________ ________ ____@@@@ @@@@____ ________ ____DDDD DDDD@@@@ @@@@EEEE EEEE____ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ________ ______## ________ ____!!!! __##____ / (0 until end of 0x200)
-0A7B7B7B 546F6D2E 4F626A00 2E4F626A 00180000 / 002E0BF8 002E0C00 000000CC 5ED4A24A 228C0100 00000015 0E009D27 FAC7A24A 22A29D27 FACB0000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 0C005407 54000C00 00000000 4E56FEFC 206E000C 00000001 00000000 00000000 00000000 00000000 0000000A 00090001 00001BF4 000A0000  00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000
-
-A = name length (bytes)
-B = name 
-C = type (".Obj")
-D = creation date (aligns with catalog listing)
-E = modification date (aligns with catalog listing)
-_ = (standardized? Check more examples?)
-@ = ascending? Looks like a date, maybe?
-# = # of sectors (?)
-! = Sector offset to first sector of data (- 0x26)
-*/
-
-void writeHintEntry(int sector) {
-    uint8_t entry[] = {
-        0x0D, //name length
-        'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', //filename
-        0x00, //padding
-        'T', 'e', 'x', 't', //file type
-        0x00, 0x00, 0x00, 0x00, 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,//padding to get to 34 bytes
-        0xA2, 0x4A, 0x22, 0x8C, //date (?)
-        0x01, 0x00, 0x00, 0x00, 0x00, 0x15, 0x0E, 0x00, //standardized (?)
-        0x9D, 0x27, 0xFA, 0xC7, //creation date (should match file)
-        0xA2, 0x4A, 0x22, 0xA2, //date (?),
-        0x9D, 0x27, 0xFA, 0xCB, //modification date (should match file)
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,//standardized 0x00 times 44 (?)
-        0x4E, 0x56, 0xFE, 0xFC, 0x20, 0x6E, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, //standardized (?)
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //standardized 0x00 (?) times 18
-        0x00, 0x01, //number of sectors
-        0x00, 0x09, 0x00, 0x01, 0x00, 0x00, //standardized (?)
-        0x22, 0x00, //offset to first sector of data (-0x26)
-        0x00, 0x01 //number of sectors (again?)
-    }; 
-    for (int i = 0; i < 142; i++) { //bytes we have to write
-        writeSector(sector, i, entry[i]);
-    }
-}
-
-void incrementMDDFFileCount() {
-    bytes sec = readSector(MDDFSec);
-    uint16_t fileCount = readInt(sec, 0xB0);
-    fileCount++;
-    writeSectorInt(MDDFSec, 0xB0, fileCount);
-
-    // empty files (technically 2 bytes at 0x9E) increments when you create an s-file. see new_sfile().
-    uint8_t c = sec[0x9F] & 0xFF;
-    writeSector(MDDFSec, 0x9F, (++c & 0xFF));
+    incrementMDDFFileCount();
 }
 
 void fixAllTagChecksums() {
@@ -588,9 +598,9 @@ int main (int argc, char *argv[]) {
     readFile();
     findMDDFSec();
     findBitmapSec();
+    findLastUsedHintIndex();
 
     int *catalogSectors = (int *) malloc(24 * sizeof(int)); // for now, support up to 24 catalog sectors
-    int *hintSectors = (int *) malloc(200 * sizeof(int)); // for now, support up to 200 hint sectors
 
     int numDirSecs = findCatalogSectors(catalogSectors);
 
@@ -614,7 +624,7 @@ int main (int argc, char *argv[]) {
         printf("\n");
     }
 
-    uint16_t nextFreeSFileIndex = getNextFreeSFileIndex();
+    uint16_t sfileid = claimNextFreeSFileIndex();
 
     int offset = findNewCatalogEntryOffset(numDirSecs, catalogSectors);
     while (offset == -1) {
@@ -626,32 +636,13 @@ int main (int argc, char *argv[]) {
     }
     printf("Found space for a new catalog entry at offset 0x%X\n", offset);
 
-    int lastUsedHintIndex = findLastUsedHintIndex();
+    writeCatalogEntry(offset, sfileid);
 
-    writeCatalogEntry(offset, nextFreeSFileIndex);
-
-    int sector = claimNextFreeHintSector(lastUsedHintIndex);
-    lastUsedHintIndex = findLastUsedHintIndex();
-    //printf("Space to create new hint sector claimed at = %d\n", sector);
-    writeHintEntry(sector);
-    //TODO fix tags for file data
     //TODO write file data
-
-    incrementMDDFFileCount();
-
-    //TODO test writing s-file entries. If this works, write a function for it
-    uint8_t toWriteTest[] = {
-        0x00, 0x00, 0x00, 0x5E, //TODO for now, hard-coded to 0x5E (which will, when added with 0x26, give us the sector the hints live on)
-        0x00, 0x00, 0x22, 0x00, //sector 0x2200 (+0x26)
-        0x00, 0x00, 0x02, 0x00,
-        0x00, 0x00,
-    }; 
-    writeToImg(43, 0x188, 14, toWriteTest);
-
     //TODO test writing tag entry for data block. If this works, write a function for it.
     writeTagInt(0x2226, 0, 0x0000); //version (2 bytes)
     writeTagInt(0x2226, 2, 0x0000); //vol (2 bytes)
-    writeTagInt(0x2226, 4, nextFreeSFileIndex); //file ID (2 bytes)
+    writeTagInt(0x2226, 4, sfileid); //file ID (2 bytes)
     writeTagInt(0x2226, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
     writeTag(0x2226, 8, 0x00); //abspage (3 bytes. The sector, 0x26? check this)
     writeTag(0x2226, 9, 0x22); 
