@@ -230,7 +230,7 @@ void writeHintEntry(int sector) {
         'T', 'e', 'x', 't', //file type
     }; 
     for (int i = 0; i < 18; i++) { //bytes we have to write
-        writeSector(sector, i, name[i]);
+        writeSector(sector, i + 1, name[i]);
     }
 
     writeSectorLong(sector, 34, 0xA24A228C); // date (?)
@@ -304,6 +304,11 @@ void claimNextFreeHintSector(uint32_t sec) {
 
 //returns the index of the s-file (the file ID)
 uint16_t claimNextFreeSFileIndex() {
+    int responsibleSector = -1;
+    int lastIdx = -1;
+    int lastIdxWithinSector = -1;
+    uint32_t lastHintAddr = -1;
+
     uint16_t idx = 0;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
@@ -315,32 +320,43 @@ uint16_t claimNextFreeSFileIndex() {
                 uint32_t fileAddr = readLong(data, srec + 4);
                 uint32_t fileSize = readLong(data, srec + 8);
                 uint16_t version = readInt(data, srec + 12);
+                printf("IDX = 0x%02X: ", idx);
                 printf("hintAddr = 0x%08X, ", hintAddr);
                 printf("fileAddr = 0x%08X, ", fileAddr);
                 printf("fileSize = 0x%08X, ", fileSize);
                 printf("version = 0x%04X\n", version);
-                if (hintAddr == 0x00000000) { //unclaimed s-record
-                    //claim it and return it
-                    for (int s = 0x26; s < SECTORS_IN_DISK; s++) {
-                        if (isFreeSector(s)) {
-                            printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X\n", idx, s);
-
-                            writeSectorLong(i, srec, s - (0x26)); //location of our hint sector
-                            writeSectorLong(i, srec + 4, 0x00002200); //TODO fileAddr - for now, hardcoded as sector 0x2200 (+0x26))
-                            writeSectorLong(i, srec + 8, 0x00000200); //TODO fileSize (hard-coded as 1 sector for now)
-                            writeSectorInt(i, srec + 12, 0x0000); //version
-
-                            claimNextFreeHintSector(s);
-                            return idx;
-                        }
-                    }
-                    return -1; // no space
+                if (hintAddr != 0x00000000) { // claimed s-record
+                    responsibleSector = i;
+                    lastIdx = idx;
+                    lastIdxWithinSector = srec;
+                    lastHintAddr = hintAddr;
                 }
                 idx++;
             }
         }
     }
-    return -1; //not found
+
+    if (lastHintAddr == -1) {
+        return -1; //not found
+    }
+
+    //claim it and return it
+    int sFileSectorToWrite = responsibleSector;
+    int indexWithinSectorToWrite = lastIdxWithinSector + 14;
+    for (int s = lastHintAddr + 0x26; s < SECTORS_IN_DISK; s++) {
+        if (isFreeSector(s)) {
+            printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X\n", lastIdx + 1, s);
+            //TODO responsibleSector could overflow to the next one if we're unlucky. For now, don't worry about it.
+            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite, s - (0x26)); //location of our hint sector
+            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 4, 0x00002200); //TODO fileAddr - for now, hardcoded as sector 0x2200 (+0x26))
+            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 8, 0x00000200); //TODO fileSize (hard-coded as 1 sector for now)
+            writeSectorInt(sFileSectorToWrite, indexWithinSectorToWrite + 12, 0x0000); //version
+
+            claimNextFreeHintSector(s);
+            return lastIdx; //TODO +1??? idk man, looks like an off-by-one to me but that's what the Lisa says so *shrug*
+        }
+    }
+    return -1; // no space
 }
 
 uint8_t calculateChecksum(int sector) {
@@ -519,12 +535,10 @@ void incrementMDDFFileCount() {
     fileCount++;
     writeSectorInt(MDDFSec, 0xB0, fileCount);
 
-    /*
     // empty_files increments when you create an s-file. see new_sfile(). TODO seems wrong though.
     uint16_t empty_file = readInt(sec, 0x9E);
     empty_file++;
     writeSectorInt(MDDFSec, 0x9E, empty_file);
-    */
 }
 
 /*
@@ -657,6 +671,9 @@ int main (int argc, char *argv[]) {
     writeTag(0x2226, 18, 0xFF);
     writeTag(0x2226, 19, 0xFF);
     fixFreeBitmap(0x2226);
+
+    //writeSector(64, SECTOR_SIZE - 11, 0x18); //for testing
+    //writeSector(136, SECTOR_SIZE - 11, 0x18); //for testing
 
     fixAllTagChecksums();
 
