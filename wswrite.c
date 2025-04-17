@@ -12,7 +12,7 @@ const int SECTOR_SIZE = 0x200;       // bytes per sector
 const int DATA_OFFSET = 0x54;        // length of BLU file header
 const int TAG_SIZE = 0x14;           // for ProFile disks
 //sectors
-const int DIRECTORY_SEC_OFFSET = 61; // Which sector the directory listing starts on
+const int CATALOG_SEC_OFFSET = 61; // Which sector the catalog listing starts on
 const int SECTORS_IN_DISK = 0x2600;  // for 5MB ProFile
 
 bytes image;
@@ -99,20 +99,20 @@ void writeToImg(int sector, int offset, int len, bytes dataToWrite) {
     }
 }
 
-int findLastDirectoryBlock() {
-    int lastDirectoryBlock = -1;
+int findLastCatalogBlock() {
+    int lastCatalogBlock = -1;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
         if (tag[2] == 0x25 && tag[5] == 0x04) { //0x25 seems to only be set for valid ones here
-            lastDirectoryBlock = i;
+            lastCatalogBlock = i;
             i += 3; //zoom past the rest in the block
         }
     }
 
-    return lastDirectoryBlock;
+    return lastCatalogBlock;
 }
 
-int findDirectorySectors(int* dataToWrite) {
+int findCatalogSectors(int* dataToWrite) {
     int count = 0;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
@@ -165,7 +165,7 @@ void printSectorType(int sector) {
     } else if (type == 0x0003) {
         printf("(tag_s_records)");
     } else if (type == 0x0004) {
-        printf("(directory)");
+        printf("(catalog)");
     } else if (type == 0x7FFF) {
         printf("(maxtag)");
     } else {
@@ -243,13 +243,13 @@ void fixFreeBitmap(int sec) {
 }
 
 // returns the first sector of the 4
-int claimNextFreeDirectoryBlock() {
-    int lastUsedDirSec = findLastDirectoryBlock();
-    for (int i = DIRECTORY_SEC_OFFSET; i < SECTORS_IN_DISK; i += 4) { //let's start looking after where the directories tend to begin
+int claimNextFreeCatalogBlock() {
+    int lastUsedDirSec = findLastCatalogBlock();
+    for (int i = CATALOG_SEC_OFFSET; i < SECTORS_IN_DISK; i += 4) { //let's start looking after where the directories tend to begin
         if (isFreeSector(i) && isFreeSector(i + 1) && isFreeSector(i + 2) && isFreeSector(i + 3)) {
             for (int j = 0; j < 4; j++) {
-                // inscribe the ancient sigil 0x0004 (and other common things) into the tags for these sectors to claim them as directory sectors
-                // TODO: sec 64  (0x8054) 0000 2500 0004 8200 00001A B1 0003 FFFFFF 000019  (directory)
+                // inscribe the ancient sigil 0x0004 (and other common things) into the tags for these sectors to claim them as catalog sectors
+                // TODO: sec 64  (0x8054) 0000 2500 0004 8200 00001A B1 0003 FFFFFF 000019  (catalog)
                 //version
                 writeTagInt(i+j, 0, 0x0000);
 
@@ -305,7 +305,7 @@ int claimNextFreeDirectoryBlock() {
                 writeSector(i+2, j, 0xFF);
                 writeSector(i+3, j, 0xFF);
             }
-            // inscribe the ancient sigil 0x240000 into the start of the first sector to label it as a directory sector
+            // inscribe the ancient sigil 0x240000 into the start of the first sector to label it as a catalog sector
             writeSector(i, 0, 0x24);
             writeSector(i, 1, 0x00);
             writeSector(i, 2, 0x00);
@@ -316,7 +316,7 @@ int claimNextFreeDirectoryBlock() {
             fixFreeBitmap(i+3);
 
             /* TODO not sure if this is quite right.
-            //TODO for testing - forward link from the last used directory sector
+            //TODO for testing - forward link from the last used catalog sector
             printf("WRITING FORWARD LINK from sector %d (+3) to %d\n", lastUsedDirSec, i);
             int secToWrite = i - 0x26; //magic number
             writeSector(lastUsedDirSec+3, SECTOR_SIZE - 6, (secToWrite << 24) & 0xFF);
@@ -324,7 +324,7 @@ int claimNextFreeDirectoryBlock() {
             writeSector(lastUsedDirSec+3, SECTOR_SIZE - 4, (secToWrite << 8) & 0xFF);
             writeSector(lastUsedDirSec+3, SECTOR_SIZE - 3, secToWrite & 0xFF);
 
-            //TODO for testing - backward link to the last directory sector start
+            //TODO for testing - backward link to the last catalog sector start
             writeSector(i+3, SECTOR_SIZE - 10, 0x00);
             writeSector(i+3, SECTOR_SIZE - 9, 0x00);
             writeSector(i+3, SECTOR_SIZE - 8, 0x00);
@@ -335,7 +335,7 @@ int claimNextFreeDirectoryBlock() {
             writeSector(i+3, SECTOR_SIZE - 1, 0x00);
             */
 
-            //TODO change file size of FS file in S-records?
+            //TODO change file size of catalog file in S-records?
             decrementMDDFFreeCount();
             decrementMDDFFreeCount();
             decrementMDDFFreeCount();
@@ -348,15 +348,15 @@ int claimNextFreeDirectoryBlock() {
 }
 
 //returns the sector index
-int claimNextFreeFSSector(int lastUsedFSIndex) {
-    //for (int i = DIRECTORY_SEC_OFFSET; i < SECTORS_IN_DISK; i += 1) { //let's start looking after where the directories tend to begin
+int claimNextFreeHintSector(int lastUsedHintIndex) {
+    //for (int i = CATALOG_SEC_OFFSET; i < SECTORS_IN_DISK; i += 1) { //let's start looking after where the directories tend to begin
     //    if (isFreeSector(i)) {
     int i = 0x5E + 0x26; //for now, hard-coded to match s-file record
     if (!isFreeSector(i)) {
         return -1; //TODO this is a possible failure state, Check this later.
     }
-            int index = lastUsedFSIndex - 1;
-            // inscribe the ancient sigil 0x0001 (and other things) into the tags for this sector to claim it as an FS sector
+            int index = lastUsedHintIndex - 1;
+            // inscribe the ancient sigil 0x0001 (and other things) into the tags for this sector to claim it as a hint sector
             // TODO: sec 131 (0x10654) 0000 0100 FFC1 8000 00005D D3 0000 FFFFFF FFFFFF  type=FFC1: ????
             //version
             writeTagInt(i, 0, 0x0000);
@@ -397,7 +397,7 @@ int claimNextFreeFSSector(int lastUsedFSIndex) {
 
             fixFreeBitmap(i);
 
-            //TODO change file size of directory file in S-records?
+            //TODO change file size of catalog file in S-records?
             decrementMDDFFreeCount();
             return i;
     //    }
@@ -405,7 +405,7 @@ int claimNextFreeFSSector(int lastUsedFSIndex) {
     return -1;
 }
 
-int findLastUsedFSIndex() {
+int findLastUsedHintIndex() {
     int lastUsedIndex = 0xFFFB; //seems to be where these start
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
@@ -419,25 +419,25 @@ int findLastUsedFSIndex() {
     return lastUsedIndex;
 }
 
-int findNewDirectoryEntryOffset(int numDirSecs, int *directorySectors) {
-    for (int i = 0; i < numDirSecs; i += 4) { //in all the possible directorySectors. They come in 4s, always
-        int dirSec = directorySectors[i];
+int findNewCatalogEntryOffset(int numDirSecs, int *catalogSectors) {
+    for (int i = 0; i < numDirSecs; i += 4) { //in all the possible catalogSectors. They come in 4s, always
+        int dirSec = catalogSectors[i];
         bytes sec = read4Sectors(dirSec);
         if (!(sec[0] == 0x24 && sec[1] == 0x00 && sec[2] == 0x00)) {
             continue; //invalid block
         }
         int offsetToFirstEntry = 0;
         if (i == 0) {
-            offsetToFirstEntry = 0x4E; //seems to be the case for the first directory sector block only
+            offsetToFirstEntry = 0x4E; //seems to be the case for the first catalog sector block only
         }
 
         int e = 0;
-        for (; e < ((SECTOR_SIZE * 4) / 0x40); e++) { //loop over all entries (0x40 long each, so up to 32 per directory block)
+        for (; e < ((SECTOR_SIZE * 4) / 0x40); e++) { //loop over all entries (0x40 long each, so up to 32 per catalog block)
             int entryOffset = offsetToFirstEntry + e * 0x40; 
             if (entryOffset >= (SECTOR_SIZE * 4) - offsetToFirstEntry - 0x4A) { //there's some standard padding on the end of these blocks I'd like to leave in place
                 break; //we're past the end, so try again later
             }
-            if (sec[entryOffset + 0] == 0x24 && sec[entryOffset + 1] == 0x00 && sec[entryOffset + 2] == 0x00) { //the magic 0x240000 defines the start of a directory entry
+            if (sec[entryOffset + 0] == 0x24 && sec[entryOffset + 1] == 0x00 && sec[entryOffset + 2] == 0x00) { //the magic 0x240000 defines the start of a catalog entry
                 bool hasName = false;
                 for (int n = 0; n < 32; n++) {
                     if ((sec[entryOffset + 3 + n] & 0xFF) != 0xFF) {
@@ -500,8 +500,8 @@ fileUnused = 4 bytes
 00000000
 */
 
-void writeDirectoryEntry(int offset, int nextFreeSFileIndex) {
-    int len = 64; //length of a directory entry
+void writeCatalogEntry(int offset, int nextFreeSFileIndex) {
+    int len = 64; //length of a catalog entry
     uint8_t entry[] = {
         0x24, //length of name with padding
         0x00, 0x00, 'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //filename
@@ -527,15 +527,15 @@ AABBBBBB BBBBBBBB BBBBBB00 CCCCCCCC ???????? / ________ ________ ________ ____@@
 A = name length (bytes)
 B = name 
 C = type (".Obj")
-D = creation date (aligns with directory listing)
-E = modification date (aligns with directory listing)
+D = creation date (aligns with catalog listing)
+E = modification date (aligns with catalog listing)
 _ = (standardized? Check more examples?)
 @ = ascending? Looks like a date, maybe?
 # = # of sectors (?)
 ! = Sector offset to first sector of data (- 0x26)
 */
 
-void writeFSEntry(int sector) {
+void writeHintEntry(int sector) {
     uint8_t entry[] = {
         0x0D, //name length
         'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', //filename
@@ -589,24 +589,24 @@ int main (int argc, char *argv[]) {
     findMDDFSec();
     findBitmapSec();
 
-    int *directorySectors = (int *) malloc(24 * sizeof(int)); // for now, support up to 24 directory sectors
-    int *fsSectors = (int *) malloc(200 * sizeof(int)); // for now, support up to 200 fs sectors
+    int *catalogSectors = (int *) malloc(24 * sizeof(int)); // for now, support up to 24 catalog sectors
+    int *hintSectors = (int *) malloc(200 * sizeof(int)); // for now, support up to 200 hint sectors
 
-    int numDirSecs = findDirectorySectors(directorySectors);
+    int numDirSecs = findCatalogSectors(catalogSectors);
 
     for (int i = 0; i < 0; i++) {
         uint8_t calculatedChecksum = calculateChecksum(i);
         printf("sec %d (0x%02X) with chksum 0x%02X:", i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
         bytes tag = readTag(i);
-        int fsSector = 0;
-        int directorySector = 0;
+        int hintSector = 0;
+        int catalogSector = 0;
         for (int j = 0; j < TAG_SIZE; j++) {
             printf("%02X ", tag[j] & 0xFF);
             if (j == 2 && tag[j] == 0x01) {
-                fsSector = 1;
+                hintSector = 1;
             }
             if (j == 5 && tag[j] == 0x04) {
-                directorySector = 1;
+                catalogSector = 1;
             }
         }
         printf(" ");
@@ -616,24 +616,24 @@ int main (int argc, char *argv[]) {
 
     uint16_t nextFreeSFileIndex = getNextFreeSFileIndex();
 
-    int offset = findNewDirectoryEntryOffset(numDirSecs, directorySectors);
+    int offset = findNewCatalogEntryOffset(numDirSecs, catalogSectors);
     while (offset == -1) {
         printf("No space found for a new entry. Creating some...\n");
-        int nextFreeBlock = claimNextFreeDirectoryBlock();
-        printf("Space to create new directory block claimed at sector = %d\n", nextFreeBlock);
-        int numDirSecs = findDirectorySectors(directorySectors); //recalc this as we've just obtained some new ones
-        offset = findNewDirectoryEntryOffset(numDirSecs, directorySectors);
+        int nextFreeBlock = claimNextFreeCatalogBlock();
+        printf("Space to create new catalog block claimed at sector = %d\n", nextFreeBlock);
+        int numDirSecs = findCatalogSectors(catalogSectors); //recalc this as we've just obtained some new ones
+        offset = findNewCatalogEntryOffset(numDirSecs, catalogSectors);
     }
-    printf("Found space for a new directory entry at offset 0x%X\n", offset);
+    printf("Found space for a new catalog entry at offset 0x%X\n", offset);
 
-    int lastUsedFSIndex = findLastUsedFSIndex();
+    int lastUsedHintIndex = findLastUsedHintIndex();
 
-    writeDirectoryEntry(offset, nextFreeSFileIndex);
+    writeCatalogEntry(offset, nextFreeSFileIndex);
 
-    int sector = claimNextFreeFSSector(lastUsedFSIndex);
-    lastUsedFSIndex = findLastUsedFSIndex();
-    //printf("Space to create new FS sector claimed at = %d\n", sector);
-    writeFSEntry(sector);
+    int sector = claimNextFreeHintSector(lastUsedHintIndex);
+    lastUsedHintIndex = findLastUsedHintIndex();
+    //printf("Space to create new hint sector claimed at = %d\n", sector);
+    writeHintEntry(sector);
     //TODO fix tags for file data
     //TODO write file data
 
@@ -676,15 +676,15 @@ int main (int argc, char *argv[]) {
         uint8_t calculatedChecksum = calculateChecksum(i);
         printf("sec %d (0x%02X) with chksum 0x%02X:", i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
         bytes tag = readTag(i);
-        int fsSector = 0;
-        int directorySector = 0;
+        int hintSector = 0;
+        int catalogSector = 0;
         for (int j = 0; j < TAG_SIZE; j++) {
             printf("%02X ", tag[j] & 0xFF);
             if (j == 2 && tag[j] == 0x01) {
-                fsSector = 1;
+                hintSector = 1;
             }
             if (j == 5 && tag[j] == 0x04) {
-                directorySector = 1;
+                catalogSector = 1;
             }
         }
         printf(" ");
