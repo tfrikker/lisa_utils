@@ -80,6 +80,18 @@ void writeSector(int sector, int offset, uint8_t data) {
     image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset] = data;
 }
 
+void writeSectorInt(int sector, int offset, uint16_t data) {
+    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset] = (data >> 8) & 0xFF;
+    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 1] = data & 0xFF;
+}
+
+void writeSectorLong(int sector, int offset, uint32_t data) {
+    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset] = (data >> 24) & 0xFF;
+    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 1] = (data >> 16) & 0xFF;
+    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 2] = (data >> 8) & 0xFF;
+    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 3] = data & 0xFF;
+}
+
 void writeToImg(int sector, int offset, int len, bytes dataToWrite) {
     int startIdx = DATA_OFFSET + (sector * SECTOR_SIZE) + offset;
     for (int i = 0; i < len; i++) {
@@ -195,10 +207,7 @@ void decrementMDDFFreeCount() {
     uint32_t fcm = freeCount - 1;
     printf("Decrementing free count. Was %u (0x%02X), now %u (0x%02X)\n", freeCount, freeCount, fcm, fcm);
     freeCount--;
-    writeSector(MDDFSec, 0xBA, (freeCount >> 24) & 0xFF);
-    writeSector(MDDFSec, 0xBB, (freeCount >> 16) & 0xFF);
-    writeSector(MDDFSec, 0xBC, (freeCount >> 8) & 0xFF);
-    writeSector(MDDFSec, 0xBD, freeCount & 0xFF);
+    writeSectorLong(MDDFSec, 0xBA, freeCount);
 }
 
 uint8_t calculateChecksum(int sector) {
@@ -356,8 +365,7 @@ int claimNextFreeFSSector(int lastUsedFSIndex) {
             writeTagInt(i, 2, 0x0100);
 
             //fileid (seems to decrement)
-            writeTag(i, 4, (index >> 8) & 0xFF);
-            writeTag(i, 5, index & 0xFF);
+            writeTagInt(i, 4, index);
 
             //dataused (0x8000 seems standard)
             writeTagInt(i, 6, 0x8000);
@@ -556,8 +564,7 @@ void incrementMDDFFileCount() {
     bytes sec = readSector(MDDFSec);
     uint16_t fileCount = readInt(sec, 0xB0);
     fileCount++;
-    writeSector(MDDFSec, 0xB0, (fileCount >> 8) & 0xFF);
-    writeSector(MDDFSec, 0xB1, fileCount & 0xFF);
+    writeSectorInt(MDDFSec, 0xB0, fileCount);
 
     // empty files (technically 2 bytes at 0x9E) increments when you create an s-file. see new_sfile().
     uint8_t c = sec[0x9F] & 0xFF;
