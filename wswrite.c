@@ -117,7 +117,7 @@ int findCatalogSectors(int* dataToWrite) {
     int count = 0;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
-        if (tag[2] == 0x25 && tag[5] == 0x04) { //0x25 seems to only be set for valid ones here
+        if (tag[5] == 0x04) {
             dataToWrite[count++] = i;
         }
     }
@@ -183,8 +183,6 @@ bool isFreeSector(int sector) {
 void decrementMDDFFreeCount() {
     bytes sec = readSector(MDDFSec);
     uint32_t freeCount = readLong(sec, 0xBA);
-    uint32_t fcm = freeCount - 1;
-    printf("Decrementing free count. Was %u (0x%02X), now %u (0x%02X)\n", freeCount, freeCount, fcm, fcm);
     freeCount--;
     writeSectorLong(MDDFSec, 0xBA, freeCount);
 }
@@ -220,33 +218,43 @@ _ = (standardized? Check more examples?)
 */
 
 void writeHintEntry(int sector) {
-    uint8_t entry[] = {
-        0x0D, //name length
+    for (int i = 0; i < SECTOR_SIZE; i++) {
+        writeSector(sector, i, 0x00); //zero out
+    }
+
+    writeSector(sector, 0, 0x0D); //name length
+
+    uint8_t name[] = {
         'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', //filename
         0x00, //padding
         'T', 'e', 'x', 't', //file type
-        0x00, 0x00, 0x00, 0x00, 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,//padding to get to 34 bytes
-        0xA2, 0x4A, 0x22, 0x8C, //date (?)
-        0x01, 0x00, 0x00, 0x00, 0x00, 0x15, 0x0E, 0x00, //standardized (?)
-        0x9D, 0x27, 0xFA, 0xC7, //creation date (should match file)
-        0xA2, 0x4A, 0x22, 0xA2, //date (?),
-        0x9D, 0x27, 0xFA, 0xCB, //modification date (should match file)
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,//standardized 0x00 times 44 (?)
-        0x4E, 0x56, 0xFE, 0xFC, 0x20, 0x6E, 0x00, 0x0C, 0x00, 0x00, 0x00, 0x01, //standardized (?)
-        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //standardized 0x00 (?) times 18
-        0x00, 0x01, //number of sectors
-        0x00, 0x09, 0x00, 0x01, 0x00, 0x00, //standardized (?)
-        0x22, 0x00, //offset to first sector of data (-0x26)
-        0x00, 0x01 //number of sectors (again?)
     }; 
-    for (int i = 0; i < 142; i++) { //bytes we have to write
-        writeSector(sector, i, entry[i]);
+    for (int i = 0; i < 18; i++) { //bytes we have to write
+        writeSector(sector, i, name[i]);
     }
+
+    writeSectorLong(sector, 34, 0xA24A228C); // date (?)
+    writeSectorLong(sector, 38, 0x01000000); // standardized (?)
+    writeSectorLong(sector, 42, 0x00150E00); // standardized (?)
+    writeSectorLong(sector, 46, 0x9D27FAC7); // creation date (should match file)
+    writeSectorLong(sector, 50, 0xA24A22A2); // date (?)
+    writeSectorLong(sector, 54, 0x9D27FACB); // modification date (should match file))
+
+    writeSectorLong(sector, 100, 0x4E56FEFC); // standardized (?)
+    writeSectorLong(sector, 104, 0x206E000C); // standardized (?)
+    writeSectorLong(sector, 108, 0x00000001); // standardized (?)
+
+    writeSectorInt(sector, 130, 0x0001); // number of sectors
+    writeSectorLong(sector, 132, 0x00090001); // standardized (?)
+
+    writeSectorInt(sector, 138, 0x2200); // offset to first sector of data (-0x26)
+    writeSectorInt(sector, 140, 0x0001); // number of sectors, again (?)
+
+    printf("Wrote hint sector at sec=0x%08X\n", sector);
 }
 
 void claimNextFreeHintSector(uint32_t sec) {
-    writeHintEntry(sec);
-
+    printf("Claiming hint sector at sec=0x%08X\n", sec);
     // inscribe the ancient sigil 0x0001 (and other things) into the tags for this sector to claim it as a hint sector
     // TODO: sec 131 (0x10654) 0000 0100 FFC1 8000 00005D D3 0000 FFFFFF FFFFFF  type=FFC1: ????
     //version
@@ -285,6 +293,8 @@ void claimNextFreeHintSector(uint32_t sec) {
     for (int j = 0; j < SECTOR_SIZE; j++) {
         writeSector(sec, j, 0x00); 
     }
+
+    writeHintEntry(sec);
 
     fixFreeBitmap(sec);
 
@@ -480,32 +490,20 @@ int findNewCatalogEntryOffset(int numDirSecs, int *catalogSectors) {
             offsetToFirstEntry = 0x4E; //seems to be the case for the first catalog sector block only
         }
 
-        int e = 0;
-        for (; e < ((SECTOR_SIZE * 4) / 0x40); e++) { //loop over all entries (0x40 long each, so up to 32 per catalog block)
-            int entryOffset = offsetToFirstEntry + e * 0x40; 
-            if (entryOffset >= (SECTOR_SIZE * 4) - offsetToFirstEntry - 0x4A) { //there's some standard padding on the end of these blocks I'd like to leave in place
+        for (int e = 0; e < ((SECTOR_SIZE * 4) / 0x40); e++) { //loop over all entries (0x40 long each, so up to 32 per catalog block)
+            int entryOffset = offsetToFirstEntry + (e * 0x40); 
+            if (entryOffset >= (SECTOR_SIZE * 4) - offsetToFirstEntry - 0x80) { //there's some standard padding (0x4A?) on the end of these blocks I'd like to leave in place
                 break; //we're past the end, so try again later
             }
             if (sec[entryOffset + 0] == 0x24 && sec[entryOffset + 1] == 0x00 && sec[entryOffset + 2] == 0x00) { //the magic 0x240000 defines the start of a catalog entry
-                bool hasName = false;
-                for (int n = 0; n < 32; n++) {
-                    if ((sec[entryOffset + 3 + n] & 0xFF) != 0xFF) {
-                        hasName = true;
-                        break;
-                    }
+                printf("sec=%d,e=%d: used by file: ", dirSec, e);
+                for (int k = 0; k < 32; k++) { //number of bytes in a filename
+                    printf("%c", sec[entryOffset + 3 + k]);
                 }
-                if (hasName) {
-                    //printf("sec=%d,e=%d: used by file: ", dirSec, e);
-                    for (int k = 0; k < 32; k++) { //number of bytes in a filename
-                        //printf("%c", sec[entryOffset + 3 + k]);
-                    }
-                    //printf(" - s-file = %02X%02X", sec[entryOffset+38] & 0xFF, sec[entryOffset+39] & 0xFF);
-                    //printf(" - size = %02X%02X%02X%02X", sec[entryOffset+48] & 0xFF, sec[entryOffset+49] & 0xFF, sec[entryOffset+50] & 0xFF, sec[entryOffset+51] & 0xFF);
-                    //printf(" - pSize = %02X%02X%02X%02X\n", sec[entryOffset+52] & 0xFF, sec[entryOffset+53] & 0xFF, sec[entryOffset+54] & 0xFF, sec[entryOffset+55] & 0xFF);
-                    continue;
-                } else {
-                    return DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
-                }
+                printf(" - s-file = %02X%02X", sec[entryOffset+38] & 0xFF, sec[entryOffset+39] & 0xFF);
+                printf(" - size = %02X%02X%02X%02X", sec[entryOffset+48] & 0xFF, sec[entryOffset+49] & 0xFF, sec[entryOffset+50] & 0xFF, sec[entryOffset+51] & 0xFF);
+                printf(" - pSize = %02X%02X%02X%02X\n", sec[entryOffset+52] & 0xFF, sec[entryOffset+53] & 0xFF, sec[entryOffset+54] & 0xFF, sec[entryOffset+55] & 0xFF);
+                continue;
             } else {
                 return DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
             }
@@ -521,9 +519,12 @@ void incrementMDDFFileCount() {
     fileCount++;
     writeSectorInt(MDDFSec, 0xB0, fileCount);
 
-    // empty files (technically 2 bytes at 0x9E) increments when you create an s-file. see new_sfile().
-    uint8_t c = sec[0x9F] & 0xFF;
-    writeSector(MDDFSec, 0x9F, (++c & 0xFF));
+    /*
+    // empty_files increments when you create an s-file. see new_sfile(). TODO seems wrong though.
+    uint16_t empty_file = readInt(sec, 0x9E);
+    empty_file++;
+    writeSectorInt(MDDFSec, 0x9E, empty_file);
+    */
 }
 
 /*
@@ -566,7 +567,7 @@ void writeCatalogEntry(int offset, int nextFreeSFileIndex) {
         0x24, //length of name with padding
         0x00, 0x00, 'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //filename
         0x03, 0x00, //we're a file
-        (nextFreeSFileIndex >> 8) & 0xFF, nextFreeSFileIndex & 0xFF, //sfile (TODO: verify I have a unique one here), and check the S-file map (?)
+        (nextFreeSFileIndex >> 8) & 0xFF, nextFreeSFileIndex & 0xFF, //sfile
         0x9D, 0x27, 0xFA, 0x88, //creation date (this one is random but I know it works)
         0x9D, 0x27, 0xFA, 0x8F, //modification date (this one is random but I know it works)
         0x00, 0x00, 0x02, 0x00, //file size (TODO: I actually need to fix this one. For now: 1 sector, exactly)
