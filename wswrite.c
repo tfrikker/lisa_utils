@@ -14,6 +14,8 @@ const int DIRECTORY_SEC_OFFSET = 61; // Which sector the directory listing start
 const int SECTORS_IN_DISK = 0x2600;  // for 5MB ProFile
 
 char *image;
+int MDDFSec;
+int bitmapSec;
 
 void readFile() {
     FILE *fileptr;
@@ -71,11 +73,10 @@ void writeToImg(int sector, int offset, int len, char* dataToWrite) {
 }
 
 int findLastDirectoryBlock() {
-    int lastDirectoryBlock = 0;
+    int lastDirectoryBlock = -1;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         char *tag = readTag(i);
         if (tag[2] == 0x25 && tag[5] == 0x04) { //0x25 seems to only be set for valid ones here
-            printf("FOUND A DIR START AT %d. Skipping forward 3...\n", i);
             lastDirectoryBlock = i;
             i += 3; //zoom past the rest in the block
         }
@@ -96,28 +97,26 @@ int findDirectorySectors(int* dataToWrite) {
     return count;
 }
 
-int findMDDFSec() {
+void findMDDFSec() {
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         char *tag = readTag(i);
         uint16_t type = ((tag[4] & 0xFF) << 8) | (tag[5] & 0xFF);
         if (type == 0x0001) {
-            return i;
+            MDDFSec = i;
+            return;
         }
     }
-
-    return -1;
 }
 
-int findBitmapSec() {
+void findBitmapSec() {
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         char *tag = readTag(i);
         uint16_t type = ((tag[4] & 0xFF) << 8) | (tag[5] & 0xFF);
         if (type == 0x0002) {
-            return i;
+            bitmapSec = i;
+            return;
         }
     }
-
-    return -1;
 }
 
 int findFsSectors(int* dataToWrite) {
@@ -196,7 +195,7 @@ int getNextFreeSFileIndex() {
     return -1;
 }
 
-void decrementMDDFFreeCount(int MDDFSec) {
+void decrementMDDFFreeCount() {
     char *sec = readSector(MDDFSec);
     uint32_t freeCount = ((sec[0xBA] & 0xFF) << 24) | ((sec[0xBB] & 0xFF) << 16) | ((sec[0xBC] & 0xFF) << 8) | ((sec[0xBD] & 0xFF));
     uint32_t fcm = freeCount - 1;
@@ -226,7 +225,7 @@ char calculateChecksum(int sector) {
 }
 
 //TODO there is a bug here. Fix it!
-void fixFreeBitmap(int bitmapSec, int sec) {
+void fixFreeBitmap(int sec) {
     bool free7 = !isFreeSector(sec);
     bool free6 = !isFreeSector(sec+1); //todo might be wrong. Don't overdo it - hidden files?
     bool free5 = !isFreeSector(sec+2);
@@ -241,7 +240,7 @@ void fixFreeBitmap(int bitmapSec, int sec) {
 }
 
 // returns the first sector of the 4
-int claimNextFreeDirectoryBlock(int bitmapSec, int MDDFSec) {
+int claimNextFreeDirectoryBlock() {
     int lastUsedDirSec = findLastDirectoryBlock();
     for (int i = DIRECTORY_SEC_OFFSET; i < SECTORS_IN_DISK; i += 4) { //let's start looking after where the directories tend to begin
         if (isFreeSector(i) && isFreeSector(i + 1) && isFreeSector(i + 2) && isFreeSector(i + 3)) {
@@ -312,10 +311,10 @@ int claimNextFreeDirectoryBlock(int bitmapSec, int MDDFSec) {
             writeSector(i, 1, 0x00);
             writeSector(i, 2, 0x00);
 
-            fixFreeBitmap(bitmapSec, i);
-            fixFreeBitmap(bitmapSec, i+1);
-            fixFreeBitmap(bitmapSec, i+2);
-            fixFreeBitmap(bitmapSec, i+3);
+            fixFreeBitmap(i);
+            fixFreeBitmap(i+1);
+            fixFreeBitmap(i+2);
+            fixFreeBitmap(i+3);
 
             /* TODO not sure if this is quite right.
             //TODO for testing - forward link from the last used directory sector
@@ -338,10 +337,10 @@ int claimNextFreeDirectoryBlock(int bitmapSec, int MDDFSec) {
             */
 
             //TODO change file size of FS file in S-records?
-            decrementMDDFFreeCount(MDDFSec);
-            decrementMDDFFreeCount(MDDFSec);
-            decrementMDDFFreeCount(MDDFSec);
-            decrementMDDFFreeCount(MDDFSec);
+            decrementMDDFFreeCount();
+            decrementMDDFFreeCount();
+            decrementMDDFFreeCount();
+            decrementMDDFFreeCount();
 
             return i;
         }
@@ -350,7 +349,7 @@ int claimNextFreeDirectoryBlock(int bitmapSec, int MDDFSec) {
 }
 
 //returns the sector index
-int claimNextFreeFSSector(int bitmapSec, int MDDFSec, int lastUsedFSIndex) {
+int claimNextFreeFSSector(int lastUsedFSIndex) {
     //for (int i = DIRECTORY_SEC_OFFSET; i < SECTORS_IN_DISK; i += 1) { //let's start looking after where the directories tend to begin
     //    if (isFreeSector(i)) {
     int i = 0x5E + 0x26; //for now, hard-coded to match s-file record
@@ -402,10 +401,10 @@ int claimNextFreeFSSector(int bitmapSec, int MDDFSec, int lastUsedFSIndex) {
                 writeSector(i, j, 0x00); 
             }
 
-            fixFreeBitmap(bitmapSec, i);
+            fixFreeBitmap(i);
 
             //TODO change file size of directory file in S-records?
-            decrementMDDFFreeCount(MDDFSec);
+            decrementMDDFFreeCount();
             return i;
     //    }
     //}
@@ -567,7 +566,7 @@ void writeFSEntry(int sector) {
     }
 }
 
-void incrementMDDFFileCount(int MDDFSec) {
+void incrementMDDFFileCount() {
     char *sec = readSector(MDDFSec);
     int fileCount = ((sec[0xB0] & 0xFF) << 8) | (sec[0xB1] & 0xFF);
     fileCount++;
@@ -592,8 +591,10 @@ void fixAllTagChecksums() {
 
 int main (int argc, char *argv[]) {
     FILE *output = fopen("WS_new.dc42", "w");
-
+    //initialize all global vars
     readFile();
+    findMDDFSec();
+    findBitmapSec();
 
     int *directorySectors = (int *) malloc(24 * sizeof(int)); // for now, support up to 24 directory sectors
     int *fsSectors = (int *) malloc(200 * sizeof(int)); // for now, support up to 200 fs sectors
@@ -626,27 +627,10 @@ int main (int argc, char *argv[]) {
 
     int nextFreeSFileIndex = getNextFreeSFileIndex();
 
-    printf("Found the following directory sectors:\n");
-    for (int i = 0; i < numDirSecs; i++) {
-        printf("%d, ", directorySectors[i]);
-    }
-    printf("\n");
-
-    printf("Found the following FS sectors:\n");
-    for (int i = 0; i < numFsSecs; i++) {
-        printf("%d, ", fsSectors[i]);
-    }
-    printf("\n");
-
-    int MDDFSec = findMDDFSec();
-    int bitmapSec = findBitmapSec();
-
-    printf("Found the MDDF at sector = %d\n", MDDFSec);
-
     int offset = findNewDirectoryEntryOffset(numDirSecs, directorySectors);
     while (offset == -1) {
         printf("No space found for a new entry. Creating some...\n");
-        int nextFreeBlock = claimNextFreeDirectoryBlock(bitmapSec, MDDFSec);
+        int nextFreeBlock = claimNextFreeDirectoryBlock();
         printf("Space to create new directory block claimed at sector = %d\n", nextFreeBlock);
         int numDirSecs = findDirectorySectors(directorySectors); //recalc this as we've just obtained some new ones
         offset = findNewDirectoryEntryOffset(numDirSecs, directorySectors);
@@ -657,14 +641,14 @@ int main (int argc, char *argv[]) {
 
     writeDirectoryEntry(offset, nextFreeSFileIndex);
 
-    int sector = claimNextFreeFSSector(bitmapSec, MDDFSec, lastUsedFSIndex);
+    int sector = claimNextFreeFSSector(lastUsedFSIndex);
     lastUsedFSIndex = findLastUsedFSIndex();
     //printf("Space to create new FS sector claimed at = %d\n", sector);
     writeFSEntry(sector);
     //TODO fix tags for file data
     //TODO write file data
 
-    incrementMDDFFileCount(MDDFSec);
+    incrementMDDFFileCount();
 
     //TODO test writing s-file entries. If this works, write a function for it
     char toWriteTest[] = {
@@ -696,10 +680,7 @@ int main (int argc, char *argv[]) {
     writeTag(0x2226, 17, 0xFF); // bkwdlink (3 bytes. 0xFFFFFF says none)
     writeTag(0x2226, 18, 0xFF);
     writeTag(0x2226, 19, 0xFF);
-    fixFreeBitmap(bitmapSec, 0x2226);
-
-    //TODO bitmapSec = findBitmapSec();
-    //TODO fixFreeBitmap(bitmapSec);
+    fixFreeBitmap(0x2226);
 
     fixAllTagChecksums();
 
