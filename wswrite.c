@@ -217,7 +217,7 @@ _ = (standardized? Check more examples?)
 ! = Sector offset to first sector of data (- MAGIC_OFFSET)
 */
 
-void writeHintEntry(int sector) {
+void writeHintEntry(int sector, int startSector, int sectorCount) {
     for (int i = 0; i < SECTOR_SIZE; i++) {
         writeSector(sector, i, 0x00); //zero out
     }
@@ -244,16 +244,17 @@ void writeHintEntry(int sector) {
     writeSectorLong(sector, 104, 0x206E000C); // standardized (?)
     writeSectorLong(sector, 108, 0x00000001); // standardized (?)
 
-    writeSectorInt(sector, 130, 0x0004); // number of sectors
+    printf("SECTOR COUNT: 0x%04X\n", sectorCount & 0xFF);
+    writeSectorInt(sector, 130, sectorCount & 0xFF); // number of sectors
     writeSectorLong(sector, 132, 0x00090001); // standardized (?)
 
-    writeSectorInt(sector, 138, 0x1351); // offset to first sector of data (-MAGIC_OFFSET)
-    writeSectorInt(sector, 140, 0x0004); // number of sectors, again (?)
+    writeSectorInt(sector, 138, startSector - MAGIC_OFFSET); // offset to first sector of data (-MAGIC_OFFSET)
+    writeSectorInt(sector, 140, sectorCount & 0xFF); // number of sectors, again (?)
 
     printf("Wrote hint sector at sec=0x%08X\n", sector);
 }
 
-void claimNextFreeHintSector(uint32_t sec) {
+void claimNextFreeHintSector(uint32_t sec, int startSector, int sectorCount) {
     printf("Claiming hint sector at sec=0x%08X\n", sec);
     // inscribe the ancient sigil 0x0001 (and other things) into the tags for this sector to claim it as a hint sector
     // TODO: sec 131 (0x10654) 0000 0100 FFC1 8000 00005D D3 0000 FFFFFF FFFFFF  type=FFC1: ????
@@ -288,7 +289,7 @@ void claimNextFreeHintSector(uint32_t sec) {
         writeSector(sec, j, 0x00); 
     }
 
-    writeHintEntry(sec);
+    writeHintEntry(sec, startSector, sectorCount);
 
     fixFreeBitmap(sec);
 
@@ -296,8 +297,17 @@ void claimNextFreeHintSector(uint32_t sec) {
     decrementMDDFFreeCount();
 }
 
+int getSectorCount(int fileSize) {
+    int sectorCount = fileSize / SECTOR_SIZE;
+    if (fileSize > sectorCount * SECTOR_SIZE) {
+        sectorCount++;
+    }
+    printf("Sector count: %d\n", sectorCount);
+    return sectorCount;
+}
+
 //returns the index of the s-file (the file ID)
-uint16_t claimNextFreeSFileIndex() {
+uint16_t claimNextFreeSFileIndex(int startSector, int fileSize) {
     int responsibleSector = -1;
     int lastIdx = -1;
     int lastIdxWithinSector = -1;
@@ -311,14 +321,11 @@ uint16_t claimNextFreeSFileIndex() {
             bytes data = readSector(i);
             for (int srec = 0; srec < SECTOR_SIZE; srec += 14) { //length of s-record
                 uint32_t hintAddr = readLong(data, srec);
-                uint32_t fileAddr = readLong(data, srec + 4);
-                uint32_t fileSize = readLong(data, srec + 8);
-                uint16_t version = readInt(data, srec + 12);
-                printf("IDX = 0x%02X: ", idx);
-                printf("hintAddr = 0x%08X, ", hintAddr);
-                printf("fileAddr = 0x%08X, ", fileAddr);
-                printf("fileSize = 0x%08X, ", fileSize);
-                printf("version = 0x%04X\n", version);
+                //printf("IDX = 0x%02X: ", idx);
+                //printf("hintAddr = 0x%08X, ", hintAddr);
+                //printf("fileAddr = 0x%08X, ", readLong(data, srec + 4));
+                //printf("fileSize = 0x%08X, ", readLong(data, srec + 8));
+                //printf("version = 0x%04X\n", readInt(data, srec + 12));
                 if (hintAddr != 0x00000000) { // claimed s-record
                     responsibleSector = i;
                     lastIdx = idx;
@@ -339,14 +346,14 @@ uint16_t claimNextFreeSFileIndex() {
     int indexWithinSectorToWrite = lastIdxWithinSector + 14;
     for (int s = lastHintAddr + MAGIC_OFFSET; s < SECTORS_IN_DISK; s++) {
         if (isFreeSector(s)) {
-            printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X\n", lastIdx + 1, s);
+            printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X, fileAddr=0x%08X, fileSize=0x%08X\n", lastIdx + 1, s, startSector, fileSize);
             //TODO responsibleSector could overflow to the next one if we're unlucky. For now, don't worry about it.
             writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite, s - MAGIC_OFFSET); //location of our hint sector
-            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 4, 0x00001351); //TODO fileAddr - for now, hardcoded as sector 0x1351 (+MAGIC_OFFSET))
-            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 8, 0x00000800); //TODO fileSize (hard-coded as 4 sectors for now)
+            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 4, startSector - MAGIC_OFFSET); // fileAddr
+            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 8, fileSize); // fileSize
             writeSectorInt(sFileSectorToWrite, indexWithinSectorToWrite + 12, 0x0000); //version
 
-            claimNextFreeHintSector(s);
+            claimNextFreeHintSector(s, startSector, getSectorCount(fileSize));
             return lastIdx; //TODO +1??? idk man, looks like an off-by-one to me but that's what the Lisa says so *shrug*
         }
     }
@@ -507,8 +514,10 @@ void incrementMDDFFileCount() {
     writeSectorInt(MDDFSec, 0x9E, empty_file);
 }
 
-void writeCatalogEntry(int offset, int nextFreeSFileIndex) {
+void writeCatalogEntry(int offset, int nextFreeSFileIndex, int fileSize) {
     int len = 64; //length of a catalog entry
+    int physicalSize = getSectorCount(fileSize) * SECTOR_SIZE;
+    printf("PHYSICAL SIZE: 0x%08X\n", physicalSize);
     uint8_t entry[] = {
         0x24, //length of name with padding
         0x00, 0x00, 'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //filename
@@ -516,8 +525,8 @@ void writeCatalogEntry(int offset, int nextFreeSFileIndex) {
         (nextFreeSFileIndex >> 8) & 0xFF, nextFreeSFileIndex & 0xFF, //sfile
         0x9D, 0x27, 0xFA, 0x88, //creation date (this one is random but I know it works)
         0x9D, 0x27, 0xFA, 0x8F, //modification date (this one is random but I know it works)
-        0x00, 0x00, 0x08, 0x00, //file size (TODO: I actually need to fix this one. For now: 4 sectors, exactly)
-        0x00, 0x00, 0x08, 0x00, // physical file size (?) (make it the same as the previous. For now: 4 sectors, exactly)
+        (fileSize >> 24) & 0xFF, (fileSize >> 16) & 0xFF, (fileSize >> 8) & 0xFF, fileSize & 0xFF, //file size
+        (physicalSize >> 24) & 0xFF, (physicalSize >> 16) & 0xFF, (physicalSize >> 8) & 0xFF, physicalSize & 0xFF, //physical file size (plus extra to fit sector bounds)
         0x00, 0x01, //fsOvrhd (? - I know this one works so let's just use it for now),
         0x00, 0xF7, //flags (lisa says 0x00F7)
         0xCE, 0x06, 0x00, 0x00 //fileUnused (lisa says 0xCE060000)
@@ -528,7 +537,7 @@ void writeCatalogEntry(int offset, int nextFreeSFileIndex) {
     incrementMDDFFileCount();
 }
 
-void claimNewCatalogEntry(uint16_t sfileid) {
+void claimNewCatalogEntry(uint16_t sfileid, int fileSize) {
     bool first = true;
     for (int dirSec = 0; dirSec < SECTORS_IN_DISK; dirSec++) { //in all the possible catalogSectors. They come in 4s, always
         if (!isCatalogSector(dirSec)) {
@@ -588,12 +597,12 @@ void claimNewCatalogEntry(uint16_t sfileid) {
                             printf("\n");
                             for (int eIdx = 0; eIdx < 64; eIdx++) { //length of catalog record
                                 int off = originalOffsetOfEntryWithinBlock + eIdx;
-                                printf("SECTOR=%d, offset within sector=%d\n", (off / SECTOR_SIZE) + dirSec, (destinationOffsetOfEntryWithinBlock+eIdx) % SECTOR_SIZE);
+                                //printf("SECTOR=%d, offset within sector=%d\n", (off / SECTOR_SIZE) + dirSec, (destinationOffsetOfEntryWithinBlock+eIdx) % SECTOR_SIZE);
                                 image[DATA_OFFSET + (SECTOR_SIZE * dirSec) + destinationOffsetOfEntryWithinBlock + eIdx] = sec[off];
                             }
                         }
 
-                        writeCatalogEntry(catalogEntryOffset, sfileid);
+                        writeCatalogEntry(catalogEntryOffset, sfileid, fileSize);
                         printf("Found space for a new catalog entry (shifting) at offset 0x%X\n", catalogEntryOffset);
                         return;
                     }
@@ -602,7 +611,7 @@ void claimNewCatalogEntry(uint16_t sfileid) {
                 } else {
                     bytes sec = readSector(dirSec + 3);
                     writeSector(dirSec + 3, SECTOR_SIZE - 11, sec[SECTOR_SIZE - 11] + 1); //claim another valid entry in this sector
-                    writeCatalogEntry(DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset, sfileid);
+                    writeCatalogEntry(DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset, sfileid, fileSize);
                     printf("Found space for a new catalog entry (appending) at offset 0x%X\n", entryOffset);
                     return;
                 }
@@ -617,7 +626,7 @@ void claimNewCatalogEntry(uint16_t sfileid) {
     printf("Space to create new catalog block claimed at sector = %d\n", nextFreeBlock);
     bytes sec = readSector(nextFreeBlock + 3);
     writeSector(nextFreeBlock + 3, SECTOR_SIZE - 11, sec[SECTOR_SIZE - 11] + 1); //claim another valid entry in this sector
-    writeCatalogEntry(DATA_OFFSET + (nextFreeBlock * SECTOR_SIZE), sfileid);
+    writeCatalogEntry(DATA_OFFSET + (nextFreeBlock * SECTOR_SIZE), sfileid, fileSize);
 }
 
 void fixAllTagChecksums() {
@@ -631,9 +640,7 @@ void fixAllTagChecksums() {
     }
 }
 
-void writeFileTagBytes(uint16_t sfileid) {
-    int startSector = 0x1377; //TODO hardcoded for now. Allocate contiguously to be nice about it
-    int sectorCount = 4; //TODO based on file size
+void writeFileTagBytes(int startSector, int sectorCount, uint16_t sfileid) {
     for (int i = 0; i < sectorCount; i++) {
         int sectorToWrite = startSector + i;
         uint32_t abspage = sectorToWrite - MAGIC_OFFSET;
@@ -659,6 +666,22 @@ void writeFileTagBytes(uint16_t sfileid) {
     }
 }
 
+int findStartingSector(int contiguousSectors) {
+    for (int i = MAGIC_OFFSET + 0x400; i < SECTORS_IN_DISK; i++) { //TODO let's start a bit in to be safe
+        bool free = true;
+        for (int j = 0; j < contiguousSectors; j++) {
+            if (!isFreeSector(i+j)) {
+                free = false;
+                break;
+            }
+        }
+        if (free) {
+            return i;
+        }
+    }
+    return -1; // not found
+}
+
 int main (int argc, char *argv[]) {
     FILE *output = fopen("WS_new.dc42", "w");
     //initialize all global vars
@@ -668,19 +691,21 @@ int main (int argc, char *argv[]) {
     findLastUsedHintIndex();
 
     // do the work
-    uint16_t sfileid = claimNextFreeSFileIndex();
+    int fileSize = 0x800;
+    int sectorCount = getSectorCount(fileSize);
+    int startSector = findStartingSector(sectorCount); // allocate contiguously to be nice about it
+    uint16_t sfileid = claimNextFreeSFileIndex(startSector, fileSize);
 
-    claimNewCatalogEntry(sfileid);
+    claimNewCatalogEntry(sfileid, fileSize);
 
     // write file data
-    for (int i = 0; i < SECTOR_SIZE; i++) { //some data
-        writeSector(0x1377, i, 0x61 + (i % 50));
-        writeSector(0x1378, i, 0x61 + (i % 50));
-        writeSector(0x1379, i, 0x61 + (i % 50));
-        writeSector(0x137A, i, 0x61 + (i % 50));
+    for (int s = 0; s < sectorCount; s++) {
+        for (int i = 0; i < SECTOR_SIZE; i++) { //some data
+            writeSector(startSector + s, i, 0x61 + (i % 50));
+        }
     }
 
-    writeFileTagBytes(sfileid);
+    writeFileTagBytes(startSector, sectorCount, sfileid);
 
     // cleanup and close
 
@@ -688,7 +713,7 @@ int main (int argc, char *argv[]) {
     fwrite(image, 1, FILE_LENGTH, output);
     fclose(output);
 
-    for (int i = 0x1376; i < 10 + 0x1376; i++) {
+    for (int i = startSector - 1; i < 10 + startSector; i++) {
         uint8_t calculatedChecksum = calculateChecksum(i);
         printf("sec %d (0x%02X) (offset=0x%02X) with chksum 0x%02X:", i, i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
         bytes tag = readTag(i);
