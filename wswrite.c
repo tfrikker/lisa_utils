@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <stdbool.h>
+#include <ctype.h>
 
 #define bytes uint8_t*
 
@@ -189,6 +190,8 @@ void decrementMDDFFreeCount() {
 
 //TODO there is a bug here. Fix it!
 void fixFreeBitmap(int sec) {
+    int byteIndex = (sec - 0x26);
+
     bool free7 = !isFreeSector(sec);
     bool free6 = !isFreeSector(sec+1); //todo might be wrong. Don't overdo it - hidden files?
     bool free5 = !isFreeSector(sec+2);
@@ -198,8 +201,8 @@ void fixFreeBitmap(int sec) {
     bool free1 = !isFreeSector(sec+6);
     bool free0 = !isFreeSector(sec+7);
     uint8_t byteToWrite = (free0 << 7) | (free1 << 6) | (free2 << 5) | (free3 << 4) | (free4 << 3) | (free5 << 2) | (free6 << 1) | (free7);
-    printf("sec=%d, bitvalue=0x%02X. Writing to sec=%d, %d\n", sec, byteToWrite & 0xFF, bitmapSec + (((sec - 0x26) / 8) / SECTOR_SIZE), ((sec - 0x26) / 8) % SECTOR_SIZE);
-    writeSector(bitmapSec + (((sec - 0x26) / 8) / SECTOR_SIZE), ((sec - 0x26) / 8) % SECTOR_SIZE, byteToWrite & 0xFF);
+    printf("sec=%d (0x%02X), bitvalue=0x%02X. Writing to sec=%d, %d\n", sec, sec, byteToWrite & 0xFF, bitmapSec + ((byteIndex / 8) / SECTOR_SIZE), (byteIndex / 8) % SECTOR_SIZE);
+    writeSector(bitmapSec + ((byteIndex / 8) / SECTOR_SIZE), (byteIndex / 8) % SECTOR_SIZE, byteToWrite & 0xFF);
 }
 
 /*
@@ -235,7 +238,7 @@ void writeHintEntry(int sector) {
 
     writeSectorLong(sector, 34, 0xA24A228C); // date (?)
     writeSectorLong(sector, 38, 0x01000000); // standardized (?)
-    writeSectorLong(sector, 42, 0x00150E00); // standardized (?)
+    writeSectorLong(sector, 42, 0x00150E00); // this may be the serial number of the Lisa, actually. http://www.applerepairmanuals.com/lisa/deserial/pg05.html
     writeSectorLong(sector, 46, 0x9D27FAC7); // creation date (should match file)
     writeSectorLong(sector, 50, 0xA24A22A2); // date (?)
     writeSectorLong(sector, 54, 0x9D27FACB); // modification date (should match file))
@@ -494,6 +497,23 @@ void findLastUsedHintIndex() {
     }
 }
 
+// Returns 0 if equal, <0 if a < b, >0 if a > b (case-insensitive)
+int ci_strncmp(uint8_t *a, int a_len, uint8_t *b, int b_len) {
+    int i = 0;
+    int min_len = (a_len < b_len) ? a_len : b_len;
+
+    for (i = 0; i < min_len; i++) {
+        int ac = tolower((unsigned char)a[i]);
+        int bc = tolower((unsigned char)b[i]);
+        if (ac != bc) {
+            return ac - bc;
+        }
+    }
+
+    // If equal so far, decide based on length
+    return a_len - b_len;
+}
+
 int findNewCatalogEntryOffset(int numDirSecs, int *catalogSectors) {
     for (int i = 0; i < numDirSecs; i += 4) { //in all the possible catalogSectors. They come in 4s, always
         int dirSec = catalogSectors[i];
@@ -506,24 +526,66 @@ int findNewCatalogEntryOffset(int numDirSecs, int *catalogSectors) {
             offsetToFirstEntry = 0x4E; //seems to be the case for the first catalog sector block only
         }
 
-        for (int e = 0; e < ((SECTOR_SIZE * 4) / 0x40); e++) { //loop over all entries (0x40 long each, so up to 32 per catalog block)
-            int entryOffset = offsetToFirstEntry + (e * 0x40); 
-            if (entryOffset >= (SECTOR_SIZE * 4) - offsetToFirstEntry - 0x80) { //there's some standard padding (0x4A?) on the end of these blocks I'd like to leave in place
-                break; //we're past the end, so try again later
-            }
-            if (sec[entryOffset + 0] == 0x24 && sec[entryOffset + 1] == 0x00 && sec[entryOffset + 2] == 0x00) { //the magic 0x240000 defines the start of a catalog entry
-                printf("sec=%d,e=%d: used by file: ", dirSec, e);
-                for (int k = 0; k < 32; k++) { //number of bytes in a filename
-                    printf("%c", sec[entryOffset + 3 + k]);
+       uint8_t myname[] = {'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't'};
+       uint8_t validEntryCount = sec[(SECTOR_SIZE * 4) - 11];
+       if (validEntryCount < 0x1E) { //TODO dodgy. We have space
+            for (int e = 0; e < ((SECTOR_SIZE * 4) / 0x40); e++) { //loop over all entries (0x40 long each, so up to 32 per catalog block)
+                int entryOffset = offsetToFirstEntry + (e * 0x40); 
+                if (entryOffset >= (SECTOR_SIZE * 4) - offsetToFirstEntry - 0x80) { //there's some standard padding (0x4A?) on the end of these blocks I'd like to leave in place
+                    break; //we're past the end, so try again later
                 }
-                printf(" - s-file = %02X%02X", sec[entryOffset+38] & 0xFF, sec[entryOffset+39] & 0xFF);
-                printf(" - size = %02X%02X%02X%02X", sec[entryOffset+48] & 0xFF, sec[entryOffset+49] & 0xFF, sec[entryOffset+50] & 0xFF, sec[entryOffset+51] & 0xFF);
-                printf(" - pSize = %02X%02X%02X%02X\n", sec[entryOffset+52] & 0xFF, sec[entryOffset+53] & 0xFF, sec[entryOffset+54] & 0xFF, sec[entryOffset+55] & 0xFF);
-                continue;
-            } else {
-                return DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
+
+                if (((e + 1) < validEntryCount) && sec[entryOffset + 0] == 0x24 && sec[entryOffset + 1] == 0x00 && sec[entryOffset + 2] == 0x00) { //the magic 0x240000 defines the start of a catalog entry
+                    printf("sec=%d,e=%d: used by file: ", dirSec, e);
+                    for (int k = 0; k < 32; k++) { //number of bytes in a filename
+                        printf("%c", sec[entryOffset + 3 + k]);
+                    }
+                    printf(" - s-file = %02X%02X", sec[entryOffset+38] & 0xFF, sec[entryOffset+39] & 0xFF);
+                    printf(" - size = %02X%02X%02X%02X", sec[entryOffset+48] & 0xFF, sec[entryOffset+49] & 0xFF, sec[entryOffset+50] & 0xFF, sec[entryOffset+51] & 0xFF);
+                    printf(" - pSize = %02X%02X%02X%02X\n", sec[entryOffset+52] & 0xFF, sec[entryOffset+53] & 0xFF, sec[entryOffset+54] & 0xFF, sec[entryOffset+55] & 0xFF);
+
+
+                    // compare my filename against the existing ones.
+                    // write it when I can, then write the rest.
+                    // if it doesn't match, continue onwards.
+                    int cmp = ci_strncmp(myname, 13, sec+entryOffset+3, 32);
+                    if (cmp == 0) {
+                        return -1; //illegal to have matching names
+                    }
+                    if (cmp < 0) {
+                        printf("FOUND IT!\n");
+                        writeSector(dirSec + 3, SECTOR_SIZE - 11, sec[(SECTOR_SIZE*4) - 11] + 1); //claim another valid entry in this sector
+                        int catalogEntryOffset = DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
+                        printf("Offset is 0x%02X\n", catalogEntryOffset);
+
+                        //shift
+                        for (int rest = e; rest < validEntryCount; rest++) {
+                            int originalOffsetOfEntryWithinBlock = offsetToFirstEntry + (rest * 0x40);
+                            int destinationOffsetOfEntryWithinBlock = originalOffsetOfEntryWithinBlock + 0x40;    
+                            printf("Moving entry at offset 0x%02X to 0x%02X, beginning to write to sector %d: ", originalOffsetOfEntryWithinBlock, destinationOffsetOfEntryWithinBlock, (originalOffsetOfEntryWithinBlock / SECTOR_SIZE) + dirSec);
+                            for (int k = 0; k < 32; k++) { //number of bytes in a filename
+                                printf("%c", sec[originalOffsetOfEntryWithinBlock + 3 + k]);
+                            }
+                            printf("\n");
+                            for (int eIdx = 0; eIdx < 64; eIdx++) { //length of catalog record
+                                int off = originalOffsetOfEntryWithinBlock + eIdx;
+                                printf("SECTOR=%d, offset within sector=%d\n", (off / SECTOR_SIZE) + dirSec, (destinationOffsetOfEntryWithinBlock+eIdx) % SECTOR_SIZE);
+                                image[DATA_OFFSET + (SECTOR_SIZE * dirSec) + destinationOffsetOfEntryWithinBlock + eIdx] = sec[off];
+                            }
+                        }
+
+                        return catalogEntryOffset;
+                    }
+
+
+                    continue;
+                } else {
+                    bytes sec = readSector(dirSec + 3);
+                    writeSector(dirSec + 3, SECTOR_SIZE - 11, sec[SECTOR_SIZE - 11] + 1); //claim another valid entry in this sector
+                    return DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
+                }
             }
-        }
+       }
     }
 
     return -1; //no space found
@@ -580,15 +642,15 @@ void writeCatalogEntry(int offset, int nextFreeSFileIndex) {
     uint8_t entry[] = {
         0x24, //length of name with padding
         0x00, 0x00, 'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //filename
-        0x03, 0x00, //we're a file
+        0x03, 0x06, //we're a file (lisa says 0x0306)
         (nextFreeSFileIndex >> 8) & 0xFF, nextFreeSFileIndex & 0xFF, //sfile
         0x9D, 0x27, 0xFA, 0x88, //creation date (this one is random but I know it works)
         0x9D, 0x27, 0xFA, 0x8F, //modification date (this one is random but I know it works)
         0x00, 0x00, 0x08, 0x00, //file size (TODO: I actually need to fix this one. For now: 4 sectors, exactly)
         0x00, 0x00, 0x08, 0x00, // physical file size (?) (make it the same as the previous. For now: 4 sectors, exactly)
         0x00, 0x01, //fsOvrhd (? - I know this one works so let's just use it for now),
-        0x00, 0x00, //flags
-        0x00, 0x00, 0x00, 0x00 //fileUnused
+        0x00, 0xF7, //flags (lisa says 0x00F7)
+        0xCE, 0x06, 0x00, 0x00 //fileUnused (lisa says 0xCE060000)
     }; 
     for (int i = 0; i < len; i++) {
         image[offset + i] = entry[i];
@@ -671,6 +733,7 @@ int main (int argc, char *argv[]) {
     writeTag(0x1377, 18, 0xFF);
     writeTag(0x1377, 19, 0xFF);
     fixFreeBitmap(0x1377);
+    decrementMDDFFreeCount();
 
     writeTagInt(0x1378, 0, 0x0000); //version (2 bytes)
     writeTagInt(0x1378, 2, 0x0000); //vol (2 bytes)
@@ -688,6 +751,7 @@ int main (int argc, char *argv[]) {
     writeTag(0x1378, 18, 0x13);
     writeTag(0x1378, 19, 0x51);
     fixFreeBitmap(0x1378);
+    decrementMDDFFreeCount();
 
     writeTagInt(0x1379, 0, 0x0000); //version (2 bytes)
     writeTagInt(0x1379, 2, 0x0000); //vol (2 bytes)
@@ -705,6 +769,7 @@ int main (int argc, char *argv[]) {
     writeTag(0x1379, 18, 0x13);
     writeTag(0x1379, 19, 0x52);
     fixFreeBitmap(0x1379);
+    decrementMDDFFreeCount();
 
     writeTagInt(0x137A, 0, 0x0000); //version (2 bytes)
     writeTagInt(0x137A, 2, 0x0000); //vol (2 bytes)
@@ -722,23 +787,14 @@ int main (int argc, char *argv[]) {
     writeTag(0x137A, 18, 0x13);
     writeTag(0x137A, 19, 0x53);
     fixFreeBitmap(0x137A);
+    decrementMDDFFreeCount();
 
-    for (int i = 0; i < SECTOR_SIZE; i++) {
-        writeSector(0x1377, i, 0x00);
-        writeSector(0x1378, i, 0x00);
-        writeSector(0x1379, i, 0x00);
-        writeSector(0x137A, i, 0x00);
+    for (int i = 0; i < SECTOR_SIZE; i++) { //some data
+        writeSector(0x1377, i, 0x61 + (i % 50));
+        writeSector(0x1378, i, 0x61 + (i % 50));
+        writeSector(0x1379, i, 0x61 + (i % 50));
+        writeSector(0x137A, i, 0x61 + (i % 50));
     }
-
-
-    //4 sectors of data
-    decrementMDDFFreeCount();
-    decrementMDDFFreeCount();
-    decrementMDDFFreeCount();
-    decrementMDDFFreeCount();
-
-    //writeSector(64, SECTOR_SIZE - 11, 0x18); //for testing
-    //writeSector(136, SECTOR_SIZE - 11, 0x18); //for testing
 
     fixAllTagChecksums();
 
