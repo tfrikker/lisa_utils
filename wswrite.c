@@ -119,16 +119,9 @@ int findLastCatalogBlock() {
     return lastCatalogBlock;
 }
 
-int findCatalogSectors(int* dataToWrite) {
-    int count = 0;
-    for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        bytes tag = readTag(i);
-        if (tag[5] == 0x04) {
-            dataToWrite[count++] = i;
-        }
-    }
-
-    return count;
+bool isCatalogSector(int sec) {
+    bytes tag = readTag(sec);
+    return (tag[4] == 0x00 && tag[5] == 0x04);
 }
 
 void findMDDFSec() {
@@ -176,7 +169,7 @@ void printSectorType(int sector) {
     } else if (type == 0x7FFF) {
         printf("(maxtag)");
     } else {
-        printf("type=%X: ????", type);
+        printf("file 0x%02X", type);
     }
 }
 
@@ -502,15 +495,53 @@ int ci_strncmp(uint8_t *a, int a_len, uint8_t *b, int b_len) {
     return a_len - b_len;
 }
 
-int findNewCatalogEntryOffset(int numDirSecs, int *catalogSectors) {
-    for (int i = 0; i < numDirSecs; i += 4) { //in all the possible catalogSectors. They come in 4s, always
-        int dirSec = catalogSectors[i];
+void incrementMDDFFileCount() {
+    bytes sec = readSector(MDDFSec);
+    uint16_t fileCount = readInt(sec, 0xB0);
+    fileCount++;
+    writeSectorInt(MDDFSec, 0xB0, fileCount);
+
+    // empty_files increments when you create an s-file. see new_sfile(). TODO seems wrong though.
+    uint16_t empty_file = readInt(sec, 0x9E);
+    empty_file++;
+    writeSectorInt(MDDFSec, 0x9E, empty_file);
+}
+
+void writeCatalogEntry(int offset, int nextFreeSFileIndex) {
+    int len = 64; //length of a catalog entry
+    uint8_t entry[] = {
+        0x24, //length of name with padding
+        0x00, 0x00, 'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //filename
+        0x03, 0x06, //we're a file (lisa says 0x0306)
+        (nextFreeSFileIndex >> 8) & 0xFF, nextFreeSFileIndex & 0xFF, //sfile
+        0x9D, 0x27, 0xFA, 0x88, //creation date (this one is random but I know it works)
+        0x9D, 0x27, 0xFA, 0x8F, //modification date (this one is random but I know it works)
+        0x00, 0x00, 0x08, 0x00, //file size (TODO: I actually need to fix this one. For now: 4 sectors, exactly)
+        0x00, 0x00, 0x08, 0x00, // physical file size (?) (make it the same as the previous. For now: 4 sectors, exactly)
+        0x00, 0x01, //fsOvrhd (? - I know this one works so let's just use it for now),
+        0x00, 0xF7, //flags (lisa says 0x00F7)
+        0xCE, 0x06, 0x00, 0x00 //fileUnused (lisa says 0xCE060000)
+    };
+    for (int i = 0; i < len; i++) {
+        image[offset + i] = entry[i];
+    }
+    incrementMDDFFileCount();
+}
+
+void claimNewCatalogEntry(uint16_t sfileid) {
+    bool first = true;
+    for (int dirSec = 0; dirSec < SECTORS_IN_DISK; dirSec++) { //in all the possible catalogSectors. They come in 4s, always
+        if (!isCatalogSector(dirSec)) {
+            continue;
+        }
+        printf("catalog sector found at sec=%d\n", dirSec);
         bytes sec = read4Sectors(dirSec);
         if (!(sec[0] == 0x24 && sec[1] == 0x00 && sec[2] == 0x00)) {
             continue; //invalid block
         }
         int offsetToFirstEntry = 0;
-        if (i == 0) {
+        if (first) {
+            first = false;
             offsetToFirstEntry = 0x4E; //seems to be the case for the first catalog sector block only
         }
 
@@ -538,7 +569,7 @@ int findNewCatalogEntryOffset(int numDirSecs, int *catalogSectors) {
                     // if it doesn't match, continue onwards.
                     int cmp = ci_strncmp(myname, 13, sec+entryOffset+3, 32);
                     if (cmp == 0) {
-                        return -1; //illegal to have matching names
+                        return; //illegal to have matching names
                     }
                     if (cmp < 0) {
                         printf("FOUND IT!\n");
@@ -562,88 +593,31 @@ int findNewCatalogEntryOffset(int numDirSecs, int *catalogSectors) {
                             }
                         }
 
-                        return catalogEntryOffset;
+                        writeCatalogEntry(catalogEntryOffset, sfileid);
+                        printf("Found space for a new catalog entry (shifting) at offset 0x%X\n", catalogEntryOffset);
+                        return;
                     }
-
 
                     continue;
                 } else {
                     bytes sec = readSector(dirSec + 3);
                     writeSector(dirSec + 3, SECTOR_SIZE - 11, sec[SECTOR_SIZE - 11] + 1); //claim another valid entry in this sector
-                    return DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
+                    writeCatalogEntry(DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset, sfileid);
+                    printf("Found space for a new catalog entry (appending) at offset 0x%X\n", entryOffset);
+                    return;
                 }
             }
        }
+        dirSec += 3; // skip past the rest in this block
     }
 
-    return -1; //no space found
-}
-
-void incrementMDDFFileCount() {
-    bytes sec = readSector(MDDFSec);
-    uint16_t fileCount = readInt(sec, 0xB0);
-    fileCount++;
-    writeSectorInt(MDDFSec, 0xB0, fileCount);
-
-    // empty_files increments when you create an s-file. see new_sfile(). TODO seems wrong though.
-    uint16_t empty_file = readInt(sec, 0x9E);
-    empty_file++;
-    writeSectorInt(MDDFSec, 0x9E, empty_file);
-}
-
-/*
-24000053 58726566 2E4F626A 00000000 00000000 00000000 00000000 00000000 00000000 03000060 9D27FA88 9D27FA8F 00003C00 00003C00 00010000 00000000
-
-key - 36 bytes
-24000053 58726566 2E4F626A 00000000 00000000 00000000 00000000 00000000 00000000
-
-eType = 2 bytes
-0300
-
-sfile = 2 bytes
-0060
-
-fileDTC = 4 bytes
-9D27FA88
-
-fileDTM = 4 bytes
-9D27FA8F
-
-size = 4 bytes
-00003C00
-
-physSize = 4 bytes
-00003C00
-
-fsOvrhd = 2 bytes
-0001
-
-flags = 2 bytes
-0000
-
-fileUnused = 4 bytes
-00000000
-*/
-
-void writeCatalogEntry(int offset, int nextFreeSFileIndex) {
-    int len = 64; //length of a catalog entry
-    uint8_t entry[] = {
-        0x24, //length of name with padding
-        0x00, 0x00, 'g', 'e', 'n', 'e', 'd', 'a', 't', 'a', '.', 'T', 'e', 'x', 't', 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, //filename
-        0x03, 0x06, //we're a file (lisa says 0x0306)
-        (nextFreeSFileIndex >> 8) & 0xFF, nextFreeSFileIndex & 0xFF, //sfile
-        0x9D, 0x27, 0xFA, 0x88, //creation date (this one is random but I know it works)
-        0x9D, 0x27, 0xFA, 0x8F, //modification date (this one is random but I know it works)
-        0x00, 0x00, 0x08, 0x00, //file size (TODO: I actually need to fix this one. For now: 4 sectors, exactly)
-        0x00, 0x00, 0x08, 0x00, // physical file size (?) (make it the same as the previous. For now: 4 sectors, exactly)
-        0x00, 0x01, //fsOvrhd (? - I know this one works so let's just use it for now),
-        0x00, 0xF7, //flags (lisa says 0x00F7)
-        0xCE, 0x06, 0x00, 0x00 //fileUnused (lisa says 0xCE060000)
-    }; 
-    for (int i = 0; i < len; i++) {
-        image[offset + i] = entry[i];
-    }
-    incrementMDDFFileCount();
+    //no space found, so let's make some
+    printf("No space found for a new entry. Creating some...\n");
+    int nextFreeBlock = claimNextFreeCatalogBlock();
+    printf("Space to create new catalog block claimed at sector = %d\n", nextFreeBlock);
+    bytes sec = readSector(nextFreeBlock + 3);
+    writeSector(nextFreeBlock + 3, SECTOR_SIZE - 11, sec[SECTOR_SIZE - 11] + 1); //claim another valid entry in this sector
+    writeCatalogEntry(DATA_OFFSET + (nextFreeBlock * SECTOR_SIZE), sfileid);
 }
 
 void fixAllTagChecksums() {
@@ -657,6 +631,34 @@ void fixAllTagChecksums() {
     }
 }
 
+void writeFileTagBytes(uint16_t sfileid) {
+    int startSector = 0x1377; //TODO hardcoded for now. Allocate contiguously to be nice about it
+    int sectorCount = 4; //TODO based on file size
+    for (int i = 0; i < sectorCount; i++) {
+        int sectorToWrite = startSector + i;
+        uint32_t abspage = sectorToWrite - MAGIC_OFFSET;
+        writeTagInt(sectorToWrite, 0, 0x0000); //version (2 bytes)
+        writeTagInt(sectorToWrite, 2, 0x0000); //vol (2 bytes)
+        writeTagInt(sectorToWrite, 4, sfileid); //file ID (2 bytes)
+        writeTagInt(sectorToWrite, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
+        writeTag3Byte(sectorToWrite, 8, abspage); //abspage (3 bytes. The sector-MAGIC_OFFSET)
+        // index 11 is checksum (1 byte - will be fixed later)
+        writeTagInt(sectorToWrite, 12, i); // relpage (2 bytes)
+        if (i == (sectorCount - 1)) {
+            writeTag3Byte(sectorToWrite, 14, 0xFFFFFF); // fwdlink (3 bytes. 0xFFFFFF says none)
+        } else {
+            writeTag3Byte(sectorToWrite, 14, abspage + 1); // fwdlink (3 bytes. 0xFFFFFF says none)
+        }
+        if (i == 0) {
+            writeTag3Byte(sectorToWrite, 17, 0xFFFFFF); // bkwdlink (3 bytes. 0xFFFFFF says none)
+        } else {
+            writeTag3Byte(sectorToWrite, 17, abspage - 1); // bkwdlink (3 bytes. 0xFFFFFF says none)
+        }
+        fixFreeBitmap(sectorToWrite);
+        decrementMDDFFreeCount();
+    }
+}
+
 int main (int argc, char *argv[]) {
     FILE *output = fopen("WS_new.dc42", "w");
     //initialize all global vars
@@ -665,98 +667,12 @@ int main (int argc, char *argv[]) {
     findBitmapSec();
     findLastUsedHintIndex();
 
-    int *catalogSectors = (int *) malloc(24 * sizeof(int)); // for now, support up to 24 catalog sectors
-
-    int numDirSecs = findCatalogSectors(catalogSectors);
-
+    // do the work
     uint16_t sfileid = claimNextFreeSFileIndex();
 
-    int offset = findNewCatalogEntryOffset(numDirSecs, catalogSectors);
-    while (offset == -1) {
-        printf("No space found for a new entry. Creating some...\n");
-        int nextFreeBlock = claimNextFreeCatalogBlock();
-        printf("Space to create new catalog block claimed at sector = %d\n", nextFreeBlock);
-        int numDirSecs = findCatalogSectors(catalogSectors); //recalc this as we've just obtained some new ones
-        offset = findNewCatalogEntryOffset(numDirSecs, catalogSectors);
-    }
-    printf("Found space for a new catalog entry at offset 0x%X\n", offset);
+    claimNewCatalogEntry(sfileid);
 
-    writeCatalogEntry(offset, sfileid);
-
-    //TODO write file data
-    //TODO test writing tag entry for data block. If this works, write a function for it.
-    writeTagInt(0x1377, 0, 0x0000); //version (2 bytes)
-    writeTagInt(0x1377, 2, 0x0000); //vol (2 bytes) (TODO: Lisa seems to say 0x2F00)
-    writeTagInt(0x1377, 4, sfileid); //file ID (2 bytes)
-    writeTagInt(0x1377, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
-    writeTag(0x1377, 8, 0x00); //abspage (3 bytes. The sector-MAGIC_OFFSET)
-    writeTag(0x1377, 9, 0x13); 
-    writeTag(0x1377, 10, 0x51); 
-    writeTag(0x1377, 11, 0x00); // checksum (1 byte - will be fixed later)
-    writeTagInt(0x1377, 12, 0x0000); // relpage (2 bytes)
-    writeTag(0x1377, 14, 0x00); // fwdlink (3 bytes. 0xFFFFFF says none)
-    writeTag(0x1377, 15, 0x13);
-    writeTag(0x1377, 16, 0x52);
-    writeTag(0x1377, 17, 0xFF); // bkwdlink (3 bytes. 0xFFFFFF says none)
-    writeTag(0x1377, 18, 0xFF);
-    writeTag(0x1377, 19, 0xFF);
-    fixFreeBitmap(0x1377);
-    decrementMDDFFreeCount();
-
-    writeTagInt(0x1378, 0, 0x0000); //version (2 bytes)
-    writeTagInt(0x1378, 2, 0x0000); //vol (2 bytes)
-    writeTagInt(0x1378, 4, sfileid); //file ID (2 bytes)
-    writeTagInt(0x1378, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
-    writeTag(0x1378, 8, 0x00); //abspage (3 bytes. The sector-MAGIC_OFFSET)
-    writeTag(0x1378, 9, 0x13); 
-    writeTag(0x1378, 10, 0x52); 
-    writeTag(0x1378, 11, 0x00); // checksum (1 byte - will be fixed later)
-    writeTagInt(0x1378, 12, 0x0001); // relpage (2 bytes)
-    writeTag(0x1378, 14, 0x00); // fwdlink (3 bytes. 0xFFFFFF says none)
-    writeTag(0x1378, 15, 0x13);
-    writeTag(0x1378, 16, 0x53);
-    writeTag(0x1378, 17, 0x00); // bkwdlink (3 bytes. 0xFFFFFF says none)
-    writeTag(0x1378, 18, 0x13);
-    writeTag(0x1378, 19, 0x51);
-    fixFreeBitmap(0x1378);
-    decrementMDDFFreeCount();
-
-    writeTagInt(0x1379, 0, 0x0000); //version (2 bytes)
-    writeTagInt(0x1379, 2, 0x0000); //vol (2 bytes)
-    writeTagInt(0x1379, 4, sfileid); //file ID (2 bytes)
-    writeTagInt(0x1379, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
-    writeTag(0x1379, 8, 0x00); //abspage (3 bytes. The sector-MAGIC_OFFSET)
-    writeTag(0x1379, 9, 0x13); 
-    writeTag(0x1379, 10, 0x53); 
-    writeTag(0x1379, 11, 0x00); // checksum (1 byte - will be fixed later)
-    writeTagInt(0x1379, 12, 0x0002); // relpage (2 bytes)
-    writeTag(0x1379, 14, 0x00); // fwdlink (3 bytes. 0xFFFFFF says none)
-    writeTag(0x1379, 15, 0x13);
-    writeTag(0x1379, 16, 0x54);
-    writeTag(0x1379, 17, 0x00); // bkwdlink (3 bytes. 0xFFFFFF says none)
-    writeTag(0x1379, 18, 0x13);
-    writeTag(0x1379, 19, 0x52);
-    fixFreeBitmap(0x1379);
-    decrementMDDFFreeCount();
-
-    writeTagInt(0x137A, 0, 0x0000); //version (2 bytes)
-    writeTagInt(0x137A, 2, 0x0000); //vol (2 bytes)
-    writeTagInt(0x137A, 4, sfileid); //file ID (2 bytes)
-    writeTagInt(0x137A, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
-    writeTag(0x137A, 8, 0x00); //abspage (3 bytes. The sector-MAGIC_OFFSET)
-    writeTag(0x137A, 9, 0x13); 
-    writeTag(0x137A, 10, 0x54); 
-    writeTag(0x137A, 11, 0x00); // checksum (1 byte - will be fixed later)
-    writeTagInt(0x137A, 12, 0x0003); // relpage (2 bytes)
-    writeTag(0x137A, 14, 0xFF); // fwdlink (3 bytes. 0xFFFFFF says none)
-    writeTag(0x137A, 15, 0xFF);
-    writeTag(0x137A, 16, 0xFF);
-    writeTag(0x137A, 17, 0x00); // bkwdlink (3 bytes. 0xFFFFFF says none)
-    writeTag(0x137A, 18, 0x13);
-    writeTag(0x137A, 19, 0x53);
-    fixFreeBitmap(0x137A);
-    decrementMDDFFreeCount();
-
+    // write file data
     for (int i = 0; i < SECTOR_SIZE; i++) { //some data
         writeSector(0x1377, i, 0x61 + (i % 50));
         writeSector(0x1378, i, 0x61 + (i % 50));
@@ -764,15 +680,17 @@ int main (int argc, char *argv[]) {
         writeSector(0x137A, i, 0x61 + (i % 50));
     }
 
+    writeFileTagBytes(sfileid);
+
+    // cleanup and close
+
     fixAllTagChecksums();
-
     fwrite(image, 1, FILE_LENGTH, output);
-
     fclose(output);
 
-    for (int i = 0; i < 200; i++) {
+    for (int i = 0x1376; i < 10 + 0x1376; i++) {
         uint8_t calculatedChecksum = calculateChecksum(i);
-        printf("sec %d (0x%02X) with chksum 0x%02X:", i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
+        printf("sec %d (0x%02X) (offset=0x%02X) with chksum 0x%02X:", i, i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
         bytes tag = readTag(i);
         for (int j = 0; j < TAG_SIZE; j++) {
             printf("%02X ", tag[j] & 0xFF);
