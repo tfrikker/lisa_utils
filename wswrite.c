@@ -112,19 +112,6 @@ void zeroSector(int sector) {
     }
 }
 
-int findLastCatalogBlock() {
-    int lastCatalogBlock = -1;
-    for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        bytes tag = readTag(i);
-        if (tag[2] == 0x25 && tag[5] == 0x04) { //0x25 seems to only be set for valid ones here
-            lastCatalogBlock = i;
-            i += 3; //zoom past the rest in the block
-        }
-    }
-
-    return lastCatalogBlock;
-}
-
 bool isCatalogSector(int sec) {
     bytes tag = readTag(sec);
     return (tag[4] == 0x00 && tag[5] == 0x04);
@@ -383,7 +370,6 @@ uint8_t calculateChecksum(int sector) {
 
 // returns the first sector of the 4
 int claimNextFreeCatalogBlock() {
-    int lastUsedDirSec = findLastCatalogBlock();
     for (int i = CATALOG_SEC_OFFSET; i < SECTORS_IN_DISK; i += 4) { //let's start looking after where the directories tend to begin
         if (isFreeSector(i) && isFreeSector(i + 1) && isFreeSector(i + 2) && isFreeSector(i + 3)) {
             for (int j = 0; j < 4; j++) {
@@ -474,19 +460,6 @@ int claimNextFreeCatalogBlock() {
         }
     }
     return -1;
-}
-
-void findLastUsedHintIndex() {
-    for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        bytes tag = readTag(i);
-        if (tag[2] == 0x01) { //seems to be the way to identify these blocks
-            uint16_t index = readInt(tag, 4);
-            if (index < lastUsedHintIndex) {
-                lastUsedHintIndex = index;
-                return;
-            }
-        }
-    }
 }
 
 // Returns 0 if equal, <0 if a < b, >0 if a > b (case-insensitive)
@@ -708,7 +681,6 @@ int main (int argc, char *argv[]) {
     readFile();
     findMDDFSec();
     findBitmapSec();
-    //findLastUsedHintIndex();
 
     // get the file we want to write
     //TODO HARDCODED
