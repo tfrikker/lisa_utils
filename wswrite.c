@@ -15,7 +15,6 @@ const int TAG_SIZE = 0x14;           // for ProFile disks
 // sectors
 const int CATALOG_SEC_OFFSET = 61;   // Which sector the catalog listing starts on
 const int SECTORS_IN_DISK = 0x2600;  // for 5MB ProFile
-const int MAGIC_OFFSET = 0x26;       // number of sectors occupied before the MDDF; commonly used as a sector offset
 
 // ---------- Variables ----------
 
@@ -106,6 +105,13 @@ void writeSectorLong(int sector, int offset, uint32_t data) {
     image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 3] = data & 0xFF;
 }
 
+void zeroSector(int sector) {
+    // "tomorrow I want you to take that sector to Anchorhead and have its memory erased. It belongs to us now"
+    for (int i = 0; i < SECTOR_SIZE; i++) {
+        writeSector(sector, i, 0x00);
+    }
+}
+
 int findLastCatalogBlock() {
     int lastCatalogBlock = -1;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
@@ -187,7 +193,7 @@ void decrementMDDFFreeCount() {
 }
 
 void fixFreeBitmap(int sec) {
-    int byteIndex = (sec - MAGIC_OFFSET);
+    int byteIndex = (sec - MDDFSec);
 
     bool free7 = !isFreeSector(sec);
     bool free6 = !isFreeSector(sec+1); //todo might be wrong. Don't overdo it - hidden files?
@@ -214,13 +220,11 @@ E = modification date (aligns with catalog listing)
 _ = (standardized? Check more examples?)
 @ = ascending? Looks like a date, maybe?
 # = # of sectors (?)
-! = Sector offset to first sector of data (- MAGIC_OFFSET)
+! = Sector offset to first sector of data (- MDDFSec)
 */
 
 void writeHintEntry(int sector, int startSector, int sectorCount, int nameLength, char* name) {
-    for (int i = 0; i < SECTOR_SIZE; i++) {
-        writeSector(sector, i, 0x00); //zero out
-    }
+    zeroSector(sector);
     writeSector(sector, 0, 0x0D); //name length
     for (int i = 0; i < nameLength; i++) { //bytes we have to write
         writeSector(sector, i + 1, name[i]);
@@ -245,7 +249,7 @@ void writeHintEntry(int sector, int startSector, int sectorCount, int nameLength
     writeSectorInt(sector, 130, sectorCount & 0xFF); // number of sectors
     writeSectorLong(sector, 132, 0x00090001); // standardized (?)
 
-    writeSectorInt(sector, 138, startSector - MAGIC_OFFSET); // offset to first sector of data (-MAGIC_OFFSET)
+    writeSectorInt(sector, 138, startSector - MDDFSec); // offset to first sector of data (-MDDFSec)
     writeSectorInt(sector, 140, sectorCount & 0xFF); // number of sectors, again (?)
 
     printf("Wrote hint sector at sec=0x%08X\n", sector);
@@ -262,14 +266,13 @@ void claimNextFreeHintSector(uint32_t sec, int startSector, int sectorCount, int
     writeTagInt(sec, 2, 0x0100);
 
     //fileid (seems to decrement)
-    writeTagInt(sec, 4, lastUsedHintIndex--);
+    writeTagInt(sec, 4, --lastUsedHintIndex);
 
     //dataused (0x8000 seems standard)
     writeTagInt(sec, 6, 0x8000);
 
     //abspage
-    int abspage = sec - MAGIC_OFFSET; //account for magic offset
-    writeTag3Byte(sec, 8, 0xFFFFFF);
+    writeTag3Byte(sec, 8, sec - MDDFSec);
 
     //index 11 is a checksum we'll in later
 
@@ -281,10 +284,6 @@ void claimNextFreeHintSector(uint32_t sec, int startSector, int sectorCount, int
 
     //bkwdlink (0xFFFFFF always)
     writeTag3Byte(sec, 17, 0xFFFFFF);
-    // "tomorrow I want you to take that sector to Anchorhead and have its memory erased. It belongs to us now"
-    for (int j = 0; j < SECTOR_SIZE; j++) {
-        writeSector(sec, j, 0x00); 
-    }
 
     writeHintEntry(sec, startSector, sectorCount, nameLength, name);
 
@@ -324,6 +323,14 @@ uint16_t claimNextFreeSFileIndex(int startSector, int fileSize, int nameLength, 
                 //printf("fileSize = 0x%08X, ", readLong(data, srec + 8));
                 //printf("version = 0x%04X\n", readInt(data, srec + 12));
                 if (hintAddr != 0x00000000) { // claimed s-record
+                    bytes hintTag = readTag(hintAddr + MDDFSec);
+                    uint16_t index = readInt(hintTag, 4);
+                    printf("hint sector = 0x%02X, index=0x%04X\n", hintAddr + MDDFSec, index);
+                    if (index < lastUsedHintIndex && index != 0x0000) { //index is 0x0000 for the 4 reserved S-file entries at the start of the listing
+                        printf("NEW LOWEST HINT INDEX: 0x%04X\n", index);
+                        lastUsedHintIndex = index;
+                    }
+
                     responsibleSector = i;
                     lastIdx = idx;
                     lastIdxWithinSector = srec;
@@ -341,12 +348,12 @@ uint16_t claimNextFreeSFileIndex(int startSector, int fileSize, int nameLength, 
     //claim it and return it
     int sFileSectorToWrite = responsibleSector;
     int indexWithinSectorToWrite = lastIdxWithinSector + 14;
-    for (int s = lastHintAddr + MAGIC_OFFSET; s < SECTORS_IN_DISK; s++) {
+    for (int s = lastHintAddr + MDDFSec; s < SECTORS_IN_DISK; s++) {
         if (isFreeSector(s)) {
             printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X, fileAddr=0x%08X, fileSize=0x%08X\n", lastIdx + 1, s, startSector, fileSize);
             //TODO responsibleSector could overflow to the next one if we're unlucky. For now, don't worry about it.
-            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite, s - MAGIC_OFFSET); //location of our hint sector
-            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 4, startSector - MAGIC_OFFSET); // fileAddr
+            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite, s - MDDFSec); //location of our hint sector
+            writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 4, startSector - MDDFSec); // fileAddr
             writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 8, fileSize); // fileSize
             writeSectorInt(sFileSectorToWrite, indexWithinSectorToWrite + 12, 0x0000); //version
 
@@ -395,8 +402,8 @@ int claimNextFreeCatalogBlock() {
                 writeTagInt(i+j, 6, 0x8200);
 
                 //abspage
-                int abspage = (i+j) - MAGIC_OFFSET; //account for magic offset
-                writeTag3Byte(i+j, 8, 0xFFFFFF);
+                int abspage = (i+j) - MDDFSec; //account for magic offset
+                writeTag3Byte(i+j, 8, abspage);
 
                 //index 11 is a checksum we'll in later
 
@@ -421,12 +428,10 @@ int claimNextFreeCatalogBlock() {
                 }
             }
             // "tomorrow I want you to take those sectors to Anchorhead and have their memory erased. They belong to us now"
-            for (int j = 0; j < SECTOR_SIZE; j++) {
-                writeSector(i, j, 0xFF); 
-                writeSector(i+1, j, 0xFF);
-                writeSector(i+2, j, 0xFF);
-                writeSector(i+3, j, 0xFF);
-            }
+            zeroSector(i);
+            zeroSector(i + 1);
+            zeroSector(i + 2);
+            zeroSector(i + 3);
             // inscribe the ancient sigil 0x240000 into the start of the first sector to label it as a catalog sector
             writeSector(i, 0, 0x24);
             writeSector(i, 1, 0x00);
@@ -442,7 +447,7 @@ int claimNextFreeCatalogBlock() {
             /* TODO not sure if this is quite right.
             //TODO for testing - forward link from the last used catalog sector
             printf("WRITING FORWARD LINK from sector %d (+3) to %d\n", lastUsedDirSec, i);
-            int secToWrite = i - MAGIC_OFFSET; //magic number
+            int secToWrite = i - MDDFSec; //magic number
             writeSector(lastUsedDirSec+3, SECTOR_SIZE - 6, (secToWrite << 24) & 0xFF);
             writeSector(lastUsedDirSec+3, SECTOR_SIZE - 5, (secToWrite << 16) & 0xFF);
             writeSector(lastUsedDirSec+3, SECTOR_SIZE - 4, (secToWrite << 8) & 0xFF);
@@ -658,12 +663,12 @@ void fixAllTagChecksums() {
 void writeFileTagBytes(int startSector, int sectorCount, uint16_t sfileid) {
     for (int i = 0; i < sectorCount; i++) {
         int sectorToWrite = startSector + i;
-        uint32_t abspage = sectorToWrite - MAGIC_OFFSET;
+        uint32_t abspage = sectorToWrite - MDDFSec;
         writeTagInt(sectorToWrite, 0, 0x0000); //version (2 bytes)
         writeTagInt(sectorToWrite, 2, 0x0000); //vol (2 bytes)
         writeTagInt(sectorToWrite, 4, sfileid); //file ID (2 bytes)
         writeTagInt(sectorToWrite, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
-        writeTag3Byte(sectorToWrite, 8, abspage); //abspage (3 bytes. The sector-MAGIC_OFFSET)
+        writeTag3Byte(sectorToWrite, 8, abspage);
         // index 11 is checksum (1 byte - will be fixed later)
         writeTagInt(sectorToWrite, 12, i); // relpage (2 bytes)
         if (i == (sectorCount - 1)) {
@@ -682,7 +687,7 @@ void writeFileTagBytes(int startSector, int sectorCount, uint16_t sfileid) {
 }
 
 int findStartingSector(int contiguousSectors) {
-    for (int i = MAGIC_OFFSET + 0x400; i < SECTORS_IN_DISK; i++) { //TODO let's start a bit in to be safe
+    for (int i = MDDFSec + 0x400; i < SECTORS_IN_DISK; i++) { //TODO let's start a bit in to be safe
         bool free = true;
         for (int j = 0; j < contiguousSectors; j++) {
             if (!isFreeSector(i+j)) {
@@ -703,24 +708,47 @@ int main (int argc, char *argv[]) {
     readFile();
     findMDDFSec();
     findBitmapSec();
-    findLastUsedHintIndex();
+    //findLastUsedHintIndex();
 
-    // do the work //TODO HARDCODED
-    int fileSize = 0x800;
+    // get the file we want to write
+    //TODO HARDCODED
+    int nameLength = 13;
+    char *name = "genedata.Text";
+
+    FILE *fileptr;
+    fileptr = fopen(name, "rb");     // Open the file in binary mode
+    fseek(fileptr, 0, SEEK_END);
+    int rawFileSize = ftell(fileptr);
+    fseek(fileptr, 0, SEEK_SET);
+    bytes filedata = (bytes) malloc(rawFileSize * sizeof(uint8_t)); // Enough memory for the file
+    fread(filedata, rawFileSize, 1, fileptr); // Read in the entire file
+    fclose(fileptr); // Close the file
+
+    printf("Read data file: length = 0x%X\n", rawFileSize);
+
+    int fileSize = rawFileSize + (SECTOR_SIZE * 2); //account for 1KB header on text files (TODO)
+
+    // do the work
     int sectorCount = getSectorCount(fileSize);
     int startSector = findStartingSector(sectorCount); // allocate contiguously to be nice about it
 
-    int nameLength = 13;
-    char *name = "genedata.Text";
     uint16_t sfileid = claimNextFreeSFileIndex(startSector, fileSize, nameLength, name);
 
     claimNewCatalogEntry(sfileid, fileSize, nameLength, name);
 
     // write file data
-    for (int s = 0; s < sectorCount; s++) {
-        for (int i = 0; i < SECTOR_SIZE; i++) { //some data
-            writeSector(startSector + s, i, 0x61 + (i % 50));
+    for (int i = 0; i < sectorCount; i++) {
+        zeroSector(startSector + i);
+    }
+    // TODO have an option to add this header, since we may not always want a text file
+    int fileIdx = 0;
+    while (fileIdx < (fileSize - (SECTOR_SIZE * 2))) { //TODO account for 2 sectors of nothing at the start of the file
+        uint8_t b = filedata[fileIdx];
+        if (b == 0x0A) {
+            b = 0x0D; //replace Mac style line breaks with Lisa style (TODO)
         }
+        writeSector((fileIdx / SECTOR_SIZE) + startSector + 2, fileIdx % SECTOR_SIZE, b);
+        fileIdx++;
     }
 
     writeFileTagBytes(startSector, sectorCount, sfileid);
@@ -731,7 +759,7 @@ int main (int argc, char *argv[]) {
     fwrite(image, 1, FILE_LENGTH, output);
     fclose(output);
 
-    for (int i = startSector - 1; i < 10 + startSector; i++) {
+    for (int i = 0; i < 200; i++) {
         uint8_t calculatedChecksum = calculateChecksum(i);
         printf("sec %d (0x%02X) (offset=0x%02X) with chksum 0x%02X:", i, i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
         bytes tag = readTag(i);
