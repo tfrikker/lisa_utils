@@ -3,7 +3,8 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <ctype.h>
-#include <_strings.h>
+#include <strings.h>
+#include <math.h>
 
 #define bytes uint8_t*
 
@@ -275,11 +276,7 @@ void claimNextFreeHintSector(uint32_t sec, int startSector, int sectorCount, int
 }
 
 int getSectorCount(int fileSize) {
-    int sectorCount = fileSize / SECTOR_SIZE;
-    if (fileSize > sectorCount * SECTOR_SIZE) {
-        sectorCount++;
-    }
-    return sectorCount;
+    return (int) ceil((double) fileSize / SECTOR_SIZE);
 }
 
 //returns the index of the s-file (the file ID)
@@ -687,7 +684,8 @@ int main (int argc, char *argv[]) {
 
     printf("Read data file: length = 0x%X\n", rawFileSize);
 
-    int fileSize = rawFileSize + (SECTOR_SIZE * 2) + ((rawFileSize / (SECTOR_SIZE * 2)) * 0x20); //account for 1KB header on text files and 0x20 footer per each 1KB of data
+    //int extra = (int) ceil((double) rawFileSize / (SECTOR_SIZE * 2)) * 0x20; //account for 0x20 footer per each 1KB of data
+    int fileSize = rawFileSize + (SECTOR_SIZE * 2);// + extra; //account for 1KB header on text files
     // do the work
     int sectorCount = getSectorCount(fileSize);
     if ((sectorCount % 2) != 0) {
@@ -705,29 +703,36 @@ int main (int argc, char *argv[]) {
     }
 
     // TODO have an option to add this header, since we may not always want a text file
-    int dataIdx = 0;
-    for (int i = 2; i < sectorCount; i++) { //account for the 2 extra sectors)
+    // TODO the extra padding bytes may overflow - clean this up later
+    int dataIdx = -1;
+    for (int i = 2; i < sectorCount; i++) { //account for the 2 extra sectors
+        printf("sec = %d, dataIdx = 0x%04X\n", i, dataIdx);
         for (int indexWithinSector = 0; indexWithinSector < SECTOR_SIZE; indexWithinSector++) {
-            if (indexWithinSector == (SECTOR_SIZE - 0x20)) {
-                for (int j = 0; j < 0x20; j++) {
+            printf("0x%02X\n", filedata[dataIdx]);
+            if (((SECTOR_SIZE - indexWithinSector) < 0x50) &&
+                (i % 2) != 0 &&
+                (filedata[dataIdx] == 0x0A)
+            ) { // don't break up a word with padding
+                printf("HEY! indexWithinSector=0x%02X\n", indexWithinSector);
+                for (int j = 0; j < (SECTOR_SIZE - indexWithinSector); j++) {
                     //write the footer to each sector
                     writeSector(startSector + i, indexWithinSector, 0x00);
                 }
                 indexWithinSector = SECTOR_SIZE;
             } else {
                 if (dataIdx < rawFileSize) {
-                    uint8_t b = filedata[dataIdx];
+                    uint8_t b = filedata[++dataIdx];
                     if (b == 0x0A) {
                         b = 0x0D; //replace Mac style line breaks with Lisa style (TODO)
                     }
                     writeSector(startSector + i, indexWithinSector, b);
-                    dataIdx++;
                 } else {
                     writeSector(startSector + i, indexWithinSector, 0x00);
                 }
             }
         }
     }
+    printf("sectorCount = %d, dataIdx (final) = 0x%04X\n", sectorCount, dataIdx);
 
     writeFileTagBytes(startSector, sectorCount, sfileid);
 
