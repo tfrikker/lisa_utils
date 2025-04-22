@@ -135,6 +135,7 @@ void findBitmapSec() {
         uint16_t type = readInt(tag, 4);
         if (type == 0x0002) {
             bitmapSec = i;
+            printf("Found Bitmap Sec = 0x%02X\n", bitmapSec);
             return;
         }
     }
@@ -158,15 +159,28 @@ void printSectorType(int sector) {
         printf("(s-file)");
     } else if (type == 0x0004) {
         printf("(catalog)");
+    } else if (type == 0x7FFF) {
+        printf("<deleted>");
     } else {
         printf("file 0x%02X", type);
     }
 }
 
+uint8_t bitmapByte(int sec) {
+    int sectorToCorrect = (sec - MDDFSec);
+    int freeBitmapSector = ((sectorToCorrect / 8) / SECTOR_SIZE) + bitmapSec; //8 sectors per byte
+    //printf("BITMAP SEC = 0x%02X, sector to correct = 0x%02X\n", freeBitmapSector, sectorToCorrect);
+
+    int byteIndex = (sectorToCorrect / 8) % SECTOR_SIZE;
+    uint8_t previousByte = readSector(freeBitmapSector)[byteIndex];
+    return previousByte;
+}
+
 bool isFreeSector(int sector) {
-    //TODO could check if the sfileid is in the s-map, still
-    bytes tag = readTag(sector);
-    return ((tag[4] & 0xFF) == 0x00) && ((tag[5] & 0xFF) == 0x00);
+    //bytes tag = readTag(sector);
+    return bitmapByte(sector) == 0x00;//TODO this is supremely cautious, for now. Fix this later
+    /*(((tag[4] & 0xFF) == 0x00) && ((tag[5] & 0xFF) == 0x00)) || ((tag[4] & 0xFF) == 0x7F) && ((tag[5] & 0xFF) == 0xFF);*/
+    //0x0000 is empty, 0x7FFF is deleted (?). Both seem to signify an empty sector
 }
 
 void decrementMDDFFreeCount() {
@@ -177,19 +191,44 @@ void decrementMDDFFreeCount() {
 }
 
 void fixFreeBitmap(int sec) {
-    int byteIndex = (sec - MDDFSec);
+    int sectorToCorrect = (sec - MDDFSec);
+    int freeBitmapSector = ((sectorToCorrect / 8) / SECTOR_SIZE) + bitmapSec; //8 sectors per byte
+    //printf("BITMAP SEC = 0x%02X, sector to correct = 0x%02X\n", freeBitmapSector, sectorToCorrect);
 
-    bool free7 = !isFreeSector(sec);
-    bool free6 = !isFreeSector(sec+1); //todo might be wrong. Don't overdo it - hidden files?
-    bool free5 = !isFreeSector(sec+2);
-    bool free4 = !isFreeSector(sec+3);
-    bool free3 = !isFreeSector(sec+4);
-    bool free2 = !isFreeSector(sec+5);
-    bool free1 = !isFreeSector(sec+6);
-    bool free0 = !isFreeSector(sec+7);
+    int byteIndex = (sectorToCorrect / 8) % SECTOR_SIZE;
+
+    //printf("sectorToCorrect div 8 = %d\n", sectorToCorrect / 8);
+    //printf("sectorToCorrect mod 8 = %d\n", sectorToCorrect % 8);
+
+    int baseSec = ((sectorToCorrect / 8) * 8) + MDDFSec;
+    //printf("sec = 0x%02X, baseSec = 0x%02X\n", sectorToCorrect, baseSec);
+
+    bool free7 = !isFreeSector(baseSec);
+    bool free6 = !isFreeSector(baseSec+1); //todo might be wrong. Don't overdo it - hidden files?
+    bool free5 = !isFreeSector(baseSec+2);
+    bool free4 = !isFreeSector(baseSec+3);
+    bool free3 = !isFreeSector(baseSec+4);
+    bool free2 = !isFreeSector(baseSec+5);
+    bool free1 = !isFreeSector(baseSec+6);
+    bool free0 = !isFreeSector(baseSec+7);
     uint8_t byteToWrite = (free0 << 7) | (free1 << 6) | (free2 << 5) | (free3 << 4) | (free4 << 3) | (free5 << 2) | (free6 << 1) | (free7);
-    printf("sec=%d (0x%02X), bitvalue=0x%02X. Writing to sec=%d, %d\n", sec, sec, byteToWrite & 0xFF, bitmapSec + ((byteIndex / 8) / SECTOR_SIZE), (byteIndex / 8) % SECTOR_SIZE);
-    writeSector(bitmapSec + ((byteIndex / 8) / SECTOR_SIZE), (byteIndex / 8) % SECTOR_SIZE, byteToWrite & 0xFF);
+    uint8_t previousByte = readSector(freeBitmapSector)[byteIndex];
+    if (previousByte != byteToWrite) {
+        printf("Checking sector 0x%02X (= FB[0x%02X][0x%02X])\n", sec, freeBitmapSector, byteIndex);
+        printf("Mismatching bitmap byte (was 0x%02X, now is 0x%02X).\n", previousByte, byteToWrite);
+        printf("tags: \n");
+        for (int j = 0; j < 8; j++) {
+            bytes tag = readTag(baseSec + j);
+            for (int j = 0; j < TAG_SIZE; j++) {
+                printf("%02X ", tag[j] & 0xFF);
+            }
+            printf(" ");
+            printSectorType(baseSec + j);
+            printf("\n");
+        }
+    }
+    //printf("sec=%d (0x%02X), bitvalue=0x%02X. Writing to sec=%d, %d\n", baseSec, baseSec, byteToWrite & 0xFF, bitmapSec + ((byteIndex / 8) / SECTOR_SIZE), (byteIndex / 8) % SECTOR_SIZE);
+    writeSector(freeBitmapSector, byteIndex, byteToWrite & 0xFF);
 }
 
 /*
@@ -338,6 +377,26 @@ uint16_t claimNextFreeSFileIndex(int startSector, int fileSize, int sectorCount,
         }
     }
     return -1; // no space
+}
+
+void printSFile() {
+    uint16_t idx = 0;
+    for (int i = 0; i < SECTORS_IN_DISK; i++) {
+        bytes tag = readTag(i);
+        uint16_t fileId = readInt(tag, 4);
+        if (fileId == 0x0003) {
+            bytes data = readSector(i);
+            for (int srec = 0; srec < SECTOR_SIZE; srec += 14) { //length of s-record
+                uint32_t hintAddr = readLong(data, srec);
+                if (hintAddr != 0x00000000) { // claimed s-record
+                    //printf("hint sector = 0x%02X, index=0x%04X\n", hintAddr + MDDFSec, index);
+                } else {
+                    printf("FREE IDX = 0x%02X\n", idx);
+                }
+                idx++;
+            }
+        }
+    }
 }
 
 uint8_t calculateChecksum(int sector) {
@@ -612,7 +671,7 @@ void fixAllTagChecksums() {
         bytes tag = readTag(i);
         uint8_t checksum = calculateChecksum(i);
         if ((checksum & 0xFF) != (tag[11] & 0xFF)) {
-            printf("Checksum invalid for sector %d. Fixing...\n", i);
+            //printf("Checksum invalid for sector %d. Fixing...\n", i);
             writeTag(i, 11, (checksum & 0xFF));
         }
     }
@@ -667,6 +726,34 @@ int main (int argc, char *argv[]) {
     findMDDFSec();
     findBitmapSec();
 
+    for (int i = 0; i < SECTORS_IN_DISK; i++) {
+        uint8_t calculatedChecksum = calculateChecksum(i);
+        printf("sec %d (0x%02X) (offset=0x%02X) with chksum 0x%02X:", i, i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
+        bytes tag = readTag(i);
+        for (int j = 0; j < TAG_SIZE; j++) {
+            printf("%02X ", tag[j] & 0xFF);
+        }
+        printf(" ");
+        printSectorType(i);
+        if (i > MDDFSec) {
+            printf(" ");
+            printf("0x%02X", bitmapByte(i));
+        }
+        printf("\n");
+    }
+
+    /*
+    printSFile();
+    for (int i = MDDFSec; i < SECTORS_IN_DISK; i++) {
+        fixFreeBitmap(i);
+    }
+    fwrite(image, 1, FILE_LENGTH, output);
+    fclose(output);
+
+
+    return 0; // for now, test free bitmap
+    */
+
     // get the file we want to write
     //TODO HARDCODED
     int nameLength = 13;
@@ -692,26 +779,42 @@ int main (int argc, char *argv[]) {
         dataBuf[bytesWritten++] = 0x00;
     }
     printf("    - wrote header. bytesWritten=0x%02X\n", bytesWritten);
+    bool justWroteSemi = false;
     bool justWroteNewline = false;
     for (int i = 0; i < rawFileSize; i++) { // for every byte of the input data
-        if (bytesWritten % BLOCK_SIZE > (BLOCK_SIZE - 0x50) && justWroteNewline) {
+        uint8_t b = filedata[i];
+        if (b == 0x0A) {
+            b = 0x0D; //replace Mac style line breaks with Lisa style (TODO)
+        }
+        if (bytesWritten % BLOCK_SIZE == BLOCK_SIZE - 1) {
+            printf("ERROR! There was no padding added here.\n");
+        }
+        if (bytesWritten % BLOCK_SIZE > (BLOCK_SIZE - 0x60) && justWroteNewline) {
             // TODO write some padding and account with the offsets
             int padding = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
             printf("        - bytesWritten = 0x%02X, adding 0x%02X bytes of padding\n", bytesWritten, padding);
             for (int j = 0; j < padding; j++) {
                 //write the footer to each sector
                 dataBuf[bytesWritten++] = 0x00;
-                justWroteNewline = false;
-            }
-        } else {
-            uint8_t b = filedata[i];
-            if (b == 0x0A) {
-                b = 0x0D; //replace Mac style line breaks with Lisa style (TODO)
-                justWroteNewline = true;
-            } else {
-                justWroteNewline = false;
             }
             dataBuf[bytesWritten++] = b;
+            justWroteNewline = false;
+        } else {
+            dataBuf[bytesWritten++] = b;
+            if (b == 0x3B || b == 0x7D) { //; or }
+                justWroteSemi = true;
+                justWroteNewline = false;
+            } else if (b == 0x0D) {
+                if (justWroteSemi) {
+                    justWroteNewline = true;
+                } else {
+                    justWroteSemi = false;
+                    justWroteNewline = false;
+                }
+            } else {
+                justWroteSemi = false;
+                justWroteNewline = false;
+            }
         }
     }
     printf("    - wrote data. bytesWritten=0x%2X\n", bytesWritten);
@@ -748,17 +851,6 @@ int main (int argc, char *argv[]) {
     fwrite(image, 1, FILE_LENGTH, output);
     fclose(output);
 
-    for (int i = startSector; i < startSector + sectorCount; i++) {
-        uint8_t calculatedChecksum = calculateChecksum(i);
-        printf("sec %d (0x%02X) (offset=0x%02X) with chksum 0x%02X:", i, i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
-        bytes tag = readTag(i);
-        for (int j = 0; j < TAG_SIZE; j++) {
-            printf("%02X ", tag[j] & 0xFF);
-        }
-        printf(" ");
-        printSectorType(i);
-        printf("\n");
-    }
 
     return 0;
 }
