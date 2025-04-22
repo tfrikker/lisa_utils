@@ -36,8 +36,7 @@ uint32_t readLong(bytes data, int offset) {
 }
 
 void readFile() {
-    FILE *fileptr;
-    fileptr = fopen("WS_MASTER.dc42", "rb");     // Open the file in binary mode
+    FILE *fileptr = fopen("WS_MASTER.dc42", "rb");     // Open the file in binary mode
     image = (bytes) malloc(FILE_LENGTH * sizeof(uint8_t)); // Enough memory for the file
     fread(image, FILE_LENGTH, 1, fileptr); // Read in the entire file
     fclose(fileptr); // Close the file
@@ -684,55 +683,62 @@ int main (int argc, char *argv[]) {
 
     printf("Read data file: length = 0x%X\n", rawFileSize);
 
-    //int extra = (int) ceil((double) rawFileSize / (SECTOR_SIZE * 2)) * 0x20; //account for 0x20 footer per each 1KB of data
-    int fileSize = rawFileSize + (SECTOR_SIZE * 2);// + extra; //account for 1KB header on text files
-    // do the work
-    int sectorCount = getSectorCount(fileSize);
-    if ((sectorCount % 2) != 0) {
-        sectorCount += (2 - (sectorCount % 2)); //TODO the editor seems to want an even number of sectors, always
+    const int BLOCK_SIZE = SECTOR_SIZE * 2;
+
+    // write the data to a buffer
+    bytes dataBuf = (bytes) malloc(rawFileSize * 2 * sizeof(uint8_t)); // Enough memory for the file with some leeway
+    int bytesWritten = 0;
+    for (int i = 0; i < BLOCK_SIZE; i++) { //1KB of header on text files
+        dataBuf[bytesWritten++] = 0x00;
     }
-    int startSector = findStartingSector(sectorCount); // allocate contiguously to be nice about it
-
-    uint16_t sfileid = claimNextFreeSFileIndex(startSector, fileSize, sectorCount, nameLength, name);
-
-    claimNewCatalogEntry(sfileid, fileSize, sectorCount, nameLength, name);
-
-    // write file data
-    for (int i = 0; i < sectorCount; i++) {
-        zeroSector(startSector + i);
-    }
-
-    // TODO have an option to add this header, since we may not always want a text file
-    // TODO the extra padding bytes may overflow - clean this up later
-    int dataIdx = -1;
-    for (int i = 2; i < sectorCount; i++) { //account for the 2 extra sectors
-        printf("sec = %d, dataIdx = 0x%04X\n", i, dataIdx);
-        for (int indexWithinSector = 0; indexWithinSector < SECTOR_SIZE; indexWithinSector++) {
-            printf("0x%02X\n", filedata[dataIdx]);
-            if (((SECTOR_SIZE - indexWithinSector) < 0x50) &&
-                (i % 2) != 0 &&
-                (filedata[dataIdx] == 0x0A)
-            ) { // don't break up a word with padding
-                printf("HEY! indexWithinSector=0x%02X\n", indexWithinSector);
-                for (int j = 0; j < (SECTOR_SIZE - indexWithinSector); j++) {
-                    //write the footer to each sector
-                    writeSector(startSector + i, indexWithinSector, 0x00);
-                }
-                indexWithinSector = SECTOR_SIZE;
-            } else {
-                if (dataIdx < rawFileSize) {
-                    uint8_t b = filedata[++dataIdx];
-                    if (b == 0x0A) {
-                        b = 0x0D; //replace Mac style line breaks with Lisa style (TODO)
-                    }
-                    writeSector(startSector + i, indexWithinSector, b);
-                } else {
-                    writeSector(startSector + i, indexWithinSector, 0x00);
-                }
+    printf("    - wrote header. bytesWritten=0x%02X\n", bytesWritten);
+    bool justWroteNewline = false;
+    for (int i = 0; i < rawFileSize; i++) { // for every byte of the input data
+        if (bytesWritten % BLOCK_SIZE > (BLOCK_SIZE - 0x50) && justWroteNewline) {
+            // TODO write some padding and account with the offsets
+            int padding = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
+            printf("        - bytesWritten = 0x%02X, adding 0x%02X bytes of padding\n", bytesWritten, padding);
+            for (int j = 0; j < padding; j++) {
+                //write the footer to each sector
+                dataBuf[bytesWritten++] = 0x00;
+                justWroteNewline = false;
             }
+        } else {
+            uint8_t b = filedata[i];
+            if (b == 0x0A) {
+                b = 0x0D; //replace Mac style line breaks with Lisa style (TODO)
+                justWroteNewline = true;
+            } else {
+                justWroteNewline = false;
+            }
+            dataBuf[bytesWritten++] = b;
         }
     }
-    printf("sectorCount = %d, dataIdx (final) = 0x%04X\n", sectorCount, dataIdx);
+    printf("    - wrote data. bytesWritten=0x%2X\n", bytesWritten);
+    int remaining = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
+    printf("    - (remaining = 0x%2X)\n", remaining);
+    for (int i = 0; i < remaining; i++) {
+        dataBuf[bytesWritten++] = 0x00;
+    }
+    printf("    - wrote end. bytesWritten=0x%2X\n", bytesWritten);
+
+    printf("Final buffer length = 0x%2X\n", bytesWritten);
+
+    // do the work
+    int sectorCount = getSectorCount(bytesWritten);
+    printf("sectorCount = 0x%2X\n", sectorCount);
+    int startSector = findStartingSector(sectorCount); // allocate contiguously to be nice about it
+
+    uint16_t sfileid = claimNextFreeSFileIndex(startSector, bytesWritten, sectorCount, nameLength, name);
+
+    claimNewCatalogEntry(sfileid, bytesWritten, sectorCount, nameLength, name);
+
+    // write the data from buffer
+    for (int i = 0; i < sectorCount; i++) {
+        for (int j = 0; j < SECTOR_SIZE; j++) {
+            writeSector(startSector + i, j, dataBuf[(i * SECTOR_SIZE) + j]);
+        }
+    }
 
     writeFileTagBytes(startSector, sectorCount, sfileid);
 
