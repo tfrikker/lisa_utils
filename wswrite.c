@@ -757,46 +757,7 @@ int findStartingSector(const int contiguousSectors) {
     return -1; // not found
 }
 
-int main (int argc, char *argv[]) {
-    FILE *output = fopen("WS_new.dc42", "w");
-    //initialize all global vars
-    readFile();
-    findMDDFSec();
-    findBitmapSec();
-
-    for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        const uint8_t calculatedChecksum = calculateChecksum(i);
-        printf("sec %d (0x%02X) (offset=0x%02X) with chksum 0x%02X:", i, i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
-        bytes tag = readTag(i);
-        for (int j = 0; j < TAG_SIZE; j++) {
-            printf("%02X ", tag[j] & 0xFF);
-        }
-        printf(" ");
-        printSectorType(i);
-        if (i > MDDFSec) {
-            printf(" ");
-            printf("0x%02X", bitmapByte(i));
-        }
-        printf("\n");
-    }
-
-    /*
-    printSFile();
-    for (int i = MDDFSec; i < SECTORS_IN_DISK; i++) {
-        fixFreeBitmap(i);
-    }
-    fwrite(image, 1, FILE_LENGTH, output);
-    fclose(output);
-
-
-    return 0; // for now, test free bitmap
-    */
-
-    // get the file we want to write
-    //TODO HARDCODED
-    const int nameLength = 13;
-    char *name = "genedata.Text";
-
+void writeFile(const int nameLength, const char* name) {
     FILE *fileptr = fopen(name, "rb");     // Open the file in binary mode
     fseek(fileptr, 0, SEEK_END);
     const int rawFileSize = (int) ftell(fileptr);
@@ -881,6 +842,45 @@ int main (int argc, char *argv[]) {
     }
 
     writeFileTagBytes(startSector, sectorCount, sfileid);
+}
+
+int main (int argc, char *argv[]) {
+    FILE *output = fopen("WS_new.dc42", "w");
+    //initialize all global vars
+    readFile();
+    findMDDFSec();
+    findBitmapSec();
+
+    for (int i = 0; i < SECTORS_IN_DISK; i++) {
+        const uint8_t calculatedChecksum = calculateChecksum(i);
+        printf("sec %d (0x%02X) (offset=0x%02X) with chksum 0x%02X:", i, i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
+        bytes tag = readTag(i);
+        for (int j = 0; j < TAG_SIZE; j++) {
+            printf("%02X ", tag[j] & 0xFF);
+        }
+        printf(" ");
+        printSectorType(i);
+        if (i > MDDFSec) {
+            printf(" ");
+            printf("0x%02X", bitmapByte(i));
+        }
+        printf("\n");
+    }
+
+    /*
+    printSFile();
+    for (int i = MDDFSec; i < SECTORS_IN_DISK; i++) {
+        fixFreeBitmap(i);
+    }
+    fwrite(image, 1, FILE_LENGTH, output);
+    fclose(output);
+
+
+    return 0; // for now, test free bitmap
+    */
+
+    // get the file we want to write
+    writeFile(13, "genedata.Text");
 
     // cleanup and close
 
