@@ -704,7 +704,7 @@ void writeFileTagBytes(int startSector, int sectorCount, uint16_t sfileid) {
 }
 
 int findStartingSector(int contiguousSectors) {
-    for (int i = MDDFSec + 0x400; i < SECTORS_IN_DISK; i++) { //TODO let's start a bit in to be safe
+    for (int i = SECTORS_IN_DISK - contiguousSectors - 0x400; i > MDDFSec + 0x400; i--) { //TODO let's start a bit in to be safe. Also start at the end to avoid clobbering by Lisa
         bool free = true;
         for (int j = 0; j < contiguousSectors; j++) {
             if (!isFreeSector(i+j)) {
