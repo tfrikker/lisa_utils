@@ -51,7 +51,7 @@ void readFile() {
     fclose(fileptr); // Close the file
     initialized = true;
 
-    printf("Read file: length = 0x%X\n", FILE_LENGTH);
+    //printf("Read file: length = 0x%X\n", FILE_LENGTH);
 }
 
 bytes readSector(const int sector) {
@@ -196,7 +196,8 @@ uint8_t bitmapByte(const int sec) {
     return previousByte;
 }
 
-bool isFreeSector(const int sector) {
+bool isFreeSector(const int sector) { //TODO this method is busted, then.
+    printf("    bitmapByte(sec=0x%02X) = 0x%02X\n", sector, bitmapByte(sector));
     //bytes tag = readTag(sector);
     return bitmapByte(sector) == 0x00;//TODO this is supremely cautious, for now. Fix this later
     /*(((tag[4] & 0xFF) == 0x00) && ((tag[5] & 0xFF) == 0x00)) || ((tag[4] & 0xFF) == 0x7F) && ((tag[5] & 0xFF) == 0xFF);*/
@@ -224,35 +225,31 @@ void fixFreeBitmap(const int sec) {
     const int baseSec = ((sectorToCorrect / 8) * 8) + MDDFSec;
     //printf("sec = 0x%02X, baseSec = 0x%02X\n", sectorToCorrect, baseSec);
 
-    const bool free7 = !isFreeSector(baseSec);
-    const bool free6 = !isFreeSector(baseSec+1); //todo might be wrong. Don't overdo it - hidden files?
-    const bool free5 = !isFreeSector(baseSec+2);
-    const bool free4 = !isFreeSector(baseSec+3);
-    const bool free3 = !isFreeSector(baseSec+4);
-    const bool free2 = !isFreeSector(baseSec+5);
-    const bool free1 = !isFreeSector(baseSec+6);
-    const bool free0 = !isFreeSector(baseSec+7);
-    const uint8_t byteToWrite = (free0 << 7) | (free1 << 6) | (free2 << 5) | (free3 << 4) | (free4 << 3) | (free5 << 2) | (free6 << 1) | (free7);
+    uint8_t oldByte = bitmapByte(sec);
+    uint8_t byteToWrite = oldByte | (1 << (sec - baseSec)); //TODO check for off-by-1 errors here
+
+    //const uint8_t byteToWrite = (free0 << 7) | (free1 << 6) | (free2 << 5) | (free3 << 4) | (free4 << 3) | (free5 << 2) | (free6 << 1) | (free7);
     bytes s = readSector(freeBitmapSector);
     const uint8_t previousByte = s[byteIndex];
     free(s);
     if (previousByte != byteToWrite) {
-        printf("Checking sector 0x%02X (= FB[0x%02X][0x%02X])\n", sec, freeBitmapSector, byteIndex);
-        printf("Mismatching bitmap byte (was 0x%02X, now is 0x%02X).\n", previousByte, byteToWrite);
-        printf("tags: \n");
+        //printf("Checking sector 0x%02X (= FB[0x%02X][0x%02X])\n", sec, freeBitmapSector, byteIndex);
+        //printf("Mismatching bitmap byte (was 0x%02X, now is 0x%02X).\n", previousByte, byteToWrite);
+        //printf("tags: \n");
         for (int j = 0; j < 8; j++) {
             bytes tag = readTag(baseSec + j);
             for (int k = 0; k < TAG_SIZE; k++) {
-                printf("%02X ", tag[j] & 0xFF);
+                //printf("%02X ", tag[j] & 0xFF);
             }
             free(tag);
-            printf(" ");
-            printSectorType(baseSec + j);
-            printf("\n");
+            //printf(" ");
+            //printSectorType(baseSec + j);
+            //printf("\n");
         }
     }
     //printf("sec=%d (0x%02X), bitvalue=0x%02X. Writing to sec=%d, %d\n", baseSec, baseSec, byteToWrite & 0xFF, bitmapSec + ((byteIndex / 8) / SECTOR_SIZE), (byteIndex / 8) % SECTOR_SIZE);
     writeSector(freeBitmapSector, byteIndex, byteToWrite & 0xFF);
+    printf("Fixing free bitmap for sector=0x%02X. Now is 0x%02X\n", sec, byteToWrite);
 }
 
 /*
@@ -419,7 +416,7 @@ void printSFile() {
                 if (hintAddr != 0x00000000) { // claimed s-record
                     //printf("hint sector = 0x%02X, index=0x%04X\n", hintAddr + MDDFSec, index);
                 } else {
-                    printf("FREE IDX = 0x%02X\n", idx);
+                    //printf("FREE IDX = 0x%02X\n", idx);
                 }
                 idx++;
             }
@@ -638,7 +635,7 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
                 if (((e + 1) < validEntryCount) && dirBlock[entryOffset + 0] == 0x24 && dirBlock[entryOffset + 1] == 0x00 && dirBlock[entryOffset + 2] == 0x00) { //the magic 0x240000 defines the start of a catalog entry
                     //printf("sec=%d,e=%d: used by file: ", dirSec, e);
                     for (int k = 0; k < 32; k++) { //number of bytes in a filename
-                        printf("%c", dirBlock[entryOffset + 3 + k]);
+                        //printf("%c", dirBlock[entryOffset + 3 + k]);
                     }
                     //printf(" - s-file = %02X%02X", sec[entryOffset+38] & 0xFF, sec[entryOffset+39] & 0xFF);
                     //printf(" - size = %02X%02X%02X%02X", sec[entryOffset+48] & 0xFF, sec[entryOffset+49] & 0xFF, sec[entryOffset+50] & 0xFF, sec[entryOffset+51] & 0xFF);
@@ -661,11 +658,11 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
                         for (int rest = e; rest < validEntryCount; rest++) {
                             const int originalOffsetOfEntryWithinBlock = offsetToFirstEntry + (rest * 0x40);
                             const int destinationOffsetOfEntryWithinBlock = originalOffsetOfEntryWithinBlock + 0x40;
-                            printf("Moving entry at offset 0x%02X to 0x%02X, beginning to write to sector %d: ", originalOffsetOfEntryWithinBlock, destinationOffsetOfEntryWithinBlock, (originalOffsetOfEntryWithinBlock / SECTOR_SIZE) + dirSec);
+                            //printf("Moving entry at offset 0x%02X to 0x%02X, beginning to write to sector %d: ", originalOffsetOfEntryWithinBlock, destinationOffsetOfEntryWithinBlock, (originalOffsetOfEntryWithinBlock / SECTOR_SIZE) + dirSec);
                             for (int k = 0; k < 32; k++) { //number of bytes in a filename
-                                printf("%c", dirBlock[originalOffsetOfEntryWithinBlock + 3 + k]);
+                                //printf("%c", dirBlock[originalOffsetOfEntryWithinBlock + 3 + k]);
                             }
-                            printf("\n");
+                            //printf("\n");
                             for (int eIdx = 0; eIdx < 64; eIdx++) { //length of catalog record
                                 const int off = originalOffsetOfEntryWithinBlock + eIdx;
                                 //printf("SECTOR=%d, offset within sector=%d\n", (off / SECTOR_SIZE) + dirSec, (destinationOffsetOfEntryWithinBlock+eIdx) % SECTOR_SIZE);
@@ -747,10 +744,13 @@ int findStartingSector(const int contiguousSectors) {
         for (int j = 0; j < contiguousSectors; j++) {
             if (!isFreeSector(i+j)) {
                 free = false;
+                printf("______RESET______\n");
                 break;
             }
+            printf("0x%02X + %d is free!\n", i, j);
         }
         if (free) {
+            printf("Claiming 0x%02X sectors starting at sector 0x%02X\n", contiguousSectors, i);
             return i;
         }
     }
@@ -787,7 +787,7 @@ void writeFile(const int nameLength, const char* name) {
         if (bytesWritten % BLOCK_SIZE == BLOCK_SIZE - 1) {
             printf("ERROR! There was no padding added here.\n");
         }
-        if (bytesWritten % BLOCK_SIZE > (BLOCK_SIZE - 0x60) && justWroteNewline) {
+        if (bytesWritten % BLOCK_SIZE > (BLOCK_SIZE - 0x100) && justWroteNewline) {
             // TODO write some padding and account with the offsets
             const int padding = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
             printf("        - bytesWritten = 0x%02X, adding 0x%02X bytes of padding\n", bytesWritten, padding);
@@ -851,7 +851,7 @@ int main (int argc, char *argv[]) {
     findMDDFSec();
     findBitmapSec();
 
-    for (int i = 0; i < SECTORS_IN_DISK; i++) {
+    for (int i = 0; i < 0; i++) {
         const uint8_t calculatedChecksum = calculateChecksum(i);
         printf("sec %d (0x%02X) (offset=0x%02X) with chksum 0x%02X:", i, i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
         bytes tag = readTag(i);
@@ -880,7 +880,8 @@ int main (int argc, char *argv[]) {
     */
 
     // get the file we want to write
-    writeFile(13, "genedata.Text");
+    writeFile(7, "g1.text");
+    writeFile(7, "g2.text");
 
     // cleanup and close
 
