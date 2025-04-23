@@ -3,7 +3,7 @@
 #include <unistd.h>
 #include <stdbool.h>
 #include <ctype.h>
-#include <strings.h>
+#include <assert.h>
 #include <math.h>
 
 #define bytes uint8_t*
@@ -20,18 +20,27 @@ const int SECTORS_IN_DISK = 0x2600;  // for 5MB ProFile
 
 // ---------- Variables ----------
 
-bytes image;
+bytes image = NULL;
 int MDDFSec;
 int bitmapSec;
 uint16_t lastUsedHintIndex = 0xFFFB; //seems to be where these start
+bool initialized = false;
 
 // ---------- Functions ----------
 
-uint16_t readInt(bytes data, int offset) {
+bytes getImage() {
+    assert (image != NULL);
+    assert (initialized);
+    return image;
+}
+
+uint16_t readInt(const bytes data, const int offset) {
+    assert(data != NULL);
     return ((data[offset] & 0xFF) << 8) | ((data[offset+1] & 0xFF));
 }
 
-uint32_t readLong(bytes data, int offset) {
+uint32_t readLong(const bytes data, const int offset) {
+    assert(data != NULL);
     return ((data[offset] & 0xFF) << 24) | ((data[offset+1] & 0xFF) << 16) | ((data[offset+2] & 0xFF) << 8) | ((data[offset+3] & 0xFF));
 }
 
@@ -40,88 +49,95 @@ void readFile() {
     image = (bytes) malloc(FILE_LENGTH * sizeof(uint8_t)); // Enough memory for the file
     fread(image, FILE_LENGTH, 1, fileptr); // Read in the entire file
     fclose(fileptr); // Close the file
+    initialized = true;
 
     printf("Read file: length = 0x%X\n", FILE_LENGTH);
 }
 
-bytes readSector(int sector) {
+bytes readSector(const int sector) {
     bytes sec = (bytes) malloc(SECTOR_SIZE * sizeof(uint8_t));
-    int startIdx = DATA_OFFSET + (sector * SECTOR_SIZE);
     for (int i = 0; i < SECTOR_SIZE; i++) {
-        sec[i] = image[startIdx + i];
+        sec[i] = 0x00;
+    }
+    const int startIdx = DATA_OFFSET + (sector * SECTOR_SIZE);
+    for (int i = 0; i < SECTOR_SIZE; i++) {
+        sec[i] = getImage()[startIdx + i];
     }
 
     return sec;
 }
 
-bytes read4Sectors(int sector) {
+bytes read4Sectors(const int sector) {
     bytes sec = (bytes) malloc(SECTOR_SIZE * sizeof(uint8_t) * 4);
-    int startIdx = DATA_OFFSET + (sector * SECTOR_SIZE);
+    const int startIdx = DATA_OFFSET + (sector * SECTOR_SIZE);
     for (int i = 0; i < SECTOR_SIZE * 4; i++) {
-        sec[i] = image[startIdx + i];
+        sec[i] = getImage()[startIdx + i];
     }
 
     return sec;
 }
 
-bytes readTag(int sector) {
+bytes readTag(const int sector) {
     bytes tag = (bytes) malloc(TAG_SIZE * sizeof(uint8_t));
-    int startIdx = DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE);
+    const int startIdx = DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE);
     for (int i = 0; i < TAG_SIZE; i++) {
-        tag[i] = image[startIdx + i];
+        tag[i] = getImage()[startIdx + i];
     }
 
     return tag;
 }
 
-void writeTag(int sector, int offset, uint8_t data) {
-    image[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset] = data;
+void writeTag(const int sector, const int offset, const uint8_t data) {
+    getImage()[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset] = data;
 }
 
-void writeTagInt(int sector, int offset, uint16_t data) {
-    image[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset] = (data >> 8) & 0xFF;
-    image[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset + 1] = data & 0xFF;
+void writeTagInt(const int sector, const int offset, const uint16_t data) {
+    getImage()[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset] = (data >> 8) & 0xFF;
+    getImage()[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset + 1] = data & 0xFF;
 }
 
 // uses 3 LSB
-void writeTag3Byte(int sector, int offset, uint32_t data) {
-    image[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset] = (data >> 16) & 0xFF;
-    image[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset + 1] = (data >> 8) & 0xFF;
-    image[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset + 2] = data & 0xFF;
+void writeTag3Byte(const int sector, const int offset, const uint32_t data) {
+    getImage()[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset] = (data >> 16) & 0xFF;
+    getImage()[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset + 1] = (data >> 8) & 0xFF;
+    getImage()[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset + 2] = data & 0xFF;
 }
 
-void writeSector(int sector, int offset, uint8_t data) {
-    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset] = data;
+void writeSector(const int sector, const int offset, const uint8_t data) {
+    getImage()[DATA_OFFSET + (sector * SECTOR_SIZE) + offset] = data;
 }
 
-void writeSectorInt(int sector, int offset, uint16_t data) {
-    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset] = (data >> 8) & 0xFF;
-    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 1] = data & 0xFF;
+void writeSectorInt(const int sector, const int offset, const uint16_t data) {
+    getImage()[DATA_OFFSET + (sector * SECTOR_SIZE) + offset] = (data >> 8) & 0xFF;
+    getImage()[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 1] = data & 0xFF;
 }
 
-void writeSectorLong(int sector, int offset, uint32_t data) {
-    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset] = (data >> 24) & 0xFF;
-    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 1] = (data >> 16) & 0xFF;
-    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 2] = (data >> 8) & 0xFF;
-    image[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 3] = data & 0xFF;
+void writeSectorLong(const int sector, const int offset, const uint32_t data) {
+    getImage()[DATA_OFFSET + (sector * SECTOR_SIZE) + offset] = (data >> 24) & 0xFF;
+    getImage()[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 1] = (data >> 16) & 0xFF;
+    getImage()[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 2] = (data >> 8) & 0xFF;
+    getImage()[DATA_OFFSET + (sector * SECTOR_SIZE) + offset + 3] = data & 0xFF;
 }
 
-void zeroSector(int sector) {
+void zeroSector(const int sector) {
     // "tomorrow I want you to take that sector to Anchorhead and have its memory erased. It belongs to us now"
     for (int i = 0; i < SECTOR_SIZE; i++) {
         writeSector(sector, i, 0x00);
     }
 }
 
-bool isCatalogSector(int sec) {
+bool isCatalogSector(const int sec) {
     bytes tag = readTag(sec);
-    return (tag[4] == 0x00 && tag[5] == 0x04);
+    const bool isCatalogSector = (tag[4] == 0x00 && tag[5] == 0x04);
+    free(tag);
+    return isCatalogSector;
 }
 
 void findMDDFSec() {
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
-        uint16_t type = readInt(tag, 4);
+        const uint16_t type = readInt(tag, 4);
+        free(tag);
         if (type == 0x0001) {
             MDDFSec = i;
             return;
@@ -132,7 +148,8 @@ void findMDDFSec() {
 void findBitmapSec() {
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
-        uint16_t type = readInt(tag, 4);
+        const uint16_t type = readInt(tag, 4);
+        free(tag);
         if (type == 0x0002) {
             bitmapSec = i;
             printf("Found Bitmap Sec = 0x%02X\n", bitmapSec);
@@ -141,9 +158,10 @@ void findBitmapSec() {
     }
 }
 
-void printSectorType(int sector) {
+void printSectorType(const int sector) {
     bytes tag = readTag(sector);
-    uint16_t type = readInt(tag, 4);
+    const uint16_t type = readInt(tag, 4);
+    free(tag);
     // thanks, Ray
     if (type == 0xAAAA) {
         printf("(boot sector)");
@@ -166,17 +184,19 @@ void printSectorType(int sector) {
     }
 }
 
-uint8_t bitmapByte(int sec) {
-    int sectorToCorrect = (sec - MDDFSec);
-    int freeBitmapSector = ((sectorToCorrect / 8) / SECTOR_SIZE) + bitmapSec; //8 sectors per byte
+uint8_t bitmapByte(const int sec) {
+    const int sectorToCorrect = (sec - MDDFSec);
+    const int freeBitmapSector = ((sectorToCorrect / 8) / SECTOR_SIZE) + bitmapSec; //8 sectors per byte
     //printf("BITMAP SEC = 0x%02X, sector to correct = 0x%02X\n", freeBitmapSector, sectorToCorrect);
 
-    int byteIndex = (sectorToCorrect / 8) % SECTOR_SIZE;
-    uint8_t previousByte = readSector(freeBitmapSector)[byteIndex];
+    const int byteIndex = (sectorToCorrect / 8) % SECTOR_SIZE;
+    bytes s = readSector(freeBitmapSector);
+    const uint8_t previousByte = s[byteIndex];
+    free(s);
     return previousByte;
 }
 
-bool isFreeSector(int sector) {
+bool isFreeSector(const int sector) {
     //bytes tag = readTag(sector);
     return bitmapByte(sector) == 0x00;//TODO this is supremely cautious, for now. Fix this later
     /*(((tag[4] & 0xFF) == 0x00) && ((tag[5] & 0xFF) == 0x00)) || ((tag[4] & 0xFF) == 0x7F) && ((tag[5] & 0xFF) == 0xFF);*/
@@ -186,42 +206,46 @@ bool isFreeSector(int sector) {
 void decrementMDDFFreeCount() {
     bytes sec = readSector(MDDFSec);
     uint32_t freeCount = readLong(sec, 0xBA);
+    free(sec);
     freeCount--;
     writeSectorLong(MDDFSec, 0xBA, freeCount);
 }
 
-void fixFreeBitmap(int sec) {
-    int sectorToCorrect = (sec - MDDFSec);
-    int freeBitmapSector = ((sectorToCorrect / 8) / SECTOR_SIZE) + bitmapSec; //8 sectors per byte
+void fixFreeBitmap(const int sec) {
+    const int sectorToCorrect = (sec - MDDFSec);
+    const int freeBitmapSector = ((sectorToCorrect / 8) / SECTOR_SIZE) + bitmapSec; //8 sectors per byte
     //printf("BITMAP SEC = 0x%02X, sector to correct = 0x%02X\n", freeBitmapSector, sectorToCorrect);
 
-    int byteIndex = (sectorToCorrect / 8) % SECTOR_SIZE;
+    const int byteIndex = (sectorToCorrect / 8) % SECTOR_SIZE;
 
     //printf("sectorToCorrect div 8 = %d\n", sectorToCorrect / 8);
     //printf("sectorToCorrect mod 8 = %d\n", sectorToCorrect % 8);
 
-    int baseSec = ((sectorToCorrect / 8) * 8) + MDDFSec;
+    const int baseSec = ((sectorToCorrect / 8) * 8) + MDDFSec;
     //printf("sec = 0x%02X, baseSec = 0x%02X\n", sectorToCorrect, baseSec);
 
-    bool free7 = !isFreeSector(baseSec);
-    bool free6 = !isFreeSector(baseSec+1); //todo might be wrong. Don't overdo it - hidden files?
-    bool free5 = !isFreeSector(baseSec+2);
-    bool free4 = !isFreeSector(baseSec+3);
-    bool free3 = !isFreeSector(baseSec+4);
-    bool free2 = !isFreeSector(baseSec+5);
-    bool free1 = !isFreeSector(baseSec+6);
-    bool free0 = !isFreeSector(baseSec+7);
-    uint8_t byteToWrite = (free0 << 7) | (free1 << 6) | (free2 << 5) | (free3 << 4) | (free4 << 3) | (free5 << 2) | (free6 << 1) | (free7);
-    uint8_t previousByte = readSector(freeBitmapSector)[byteIndex];
+    const bool free7 = !isFreeSector(baseSec);
+    const bool free6 = !isFreeSector(baseSec+1); //todo might be wrong. Don't overdo it - hidden files?
+    const bool free5 = !isFreeSector(baseSec+2);
+    const bool free4 = !isFreeSector(baseSec+3);
+    const bool free3 = !isFreeSector(baseSec+4);
+    const bool free2 = !isFreeSector(baseSec+5);
+    const bool free1 = !isFreeSector(baseSec+6);
+    const bool free0 = !isFreeSector(baseSec+7);
+    const uint8_t byteToWrite = (free0 << 7) | (free1 << 6) | (free2 << 5) | (free3 << 4) | (free4 << 3) | (free5 << 2) | (free6 << 1) | (free7);
+    bytes s = readSector(freeBitmapSector);
+    const uint8_t previousByte = s[byteIndex];
+    free(s);
     if (previousByte != byteToWrite) {
         printf("Checking sector 0x%02X (= FB[0x%02X][0x%02X])\n", sec, freeBitmapSector, byteIndex);
         printf("Mismatching bitmap byte (was 0x%02X, now is 0x%02X).\n", previousByte, byteToWrite);
         printf("tags: \n");
         for (int j = 0; j < 8; j++) {
             bytes tag = readTag(baseSec + j);
-            for (int j = 0; j < TAG_SIZE; j++) {
+            for (int k = 0; k < TAG_SIZE; k++) {
                 printf("%02X ", tag[j] & 0xFF);
             }
+            free(tag);
             printf(" ");
             printSectorType(baseSec + j);
             printf("\n");
@@ -246,7 +270,7 @@ _ = (standardized? Check more examples?)
 ! = Sector offset to first sector of data (- MDDFSec)
 */
 
-void writeHintEntry(int sector, int startSector, int sectorCount, int nameLength, char* name) {
+void writeHintEntry(const int sector, const int startSector, const int sectorCount, const int nameLength, const char* name) {
     zeroSector(sector);
     writeSector(sector, 0, 0x0D); //name length
     for (int i = 0; i < nameLength; i++) { //bytes we have to write
@@ -262,7 +286,7 @@ void writeHintEntry(int sector, int startSector, int sectorCount, int nameLength
     writeSectorLong(sector, 42, 0x00150E00); // this may be the serial number of the Lisa, actually. http://www.applerepairmanuals.com/lisa/deserial/pg05.html
     writeSectorLong(sector, 46, 0x9D27FAC7); // creation date (should match file)
     writeSectorLong(sector, 50, 0xA24A22A2); // date (?)
-    writeSectorLong(sector, 54, 0x9D27FACB); // modification date (should match file))
+    writeSectorLong(sector, 54, 0x9D27FACB); // modification date (should match file)
 
     writeSectorLong(sector, 100, 0x4E56FEFC); // standardized (?)
     writeSectorLong(sector, 104, 0x206E000C); // standardized (?)
@@ -275,7 +299,7 @@ void writeHintEntry(int sector, int startSector, int sectorCount, int nameLength
     writeSectorInt(sector, 140, sectorCount & 0xFF); // number of sectors, again (?)
 }
 
-void claimNextFreeHintSector(uint32_t sec, int startSector, int sectorCount, int nameLength, char* name) {
+void claimNextFreeHintSector(const int sec, const int startSector, const int sectorCount, const int nameLength, const char* name) {
     printf("Claiming hint sector at sec=0x%08X\n", sec);
     // inscribe the ancient sigil 0x0001 (and other things) into the tags for this sector to claim it as a hint sector
     // TODO: sec 131 (0x10654) 0000 0100 FFC1 8000 00005D D3 0000 FFFFFF FFFFFF  type=FFC1: ????
@@ -313,12 +337,12 @@ void claimNextFreeHintSector(uint32_t sec, int startSector, int sectorCount, int
     decrementMDDFFreeCount();
 }
 
-int getSectorCount(int fileSize) {
+int getSectorCount(const int fileSize) {
     return (int) ceil((double) fileSize / SECTOR_SIZE);
 }
 
 //returns the index of the s-file (the file ID)
-uint16_t claimNextFreeSFileIndex(int startSector, int fileSize, int sectorCount, int nameLength, char *name) {
+uint16_t claimNextFreeSFileIndex(const int startSector, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
     int responsibleSector = -1;
     int lastIdx = -1;
     int lastIdxWithinSector = -1;
@@ -327,19 +351,21 @@ uint16_t claimNextFreeSFileIndex(int startSector, int fileSize, int sectorCount,
     uint16_t idx = 0;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
-        uint16_t fileId = readInt(tag, 4);
+        const uint16_t fileId = readInt(tag, 4);
+        free(tag);
         if (fileId == 0x0003) {
             bytes data = readSector(i);
             for (int srec = 0; srec < SECTOR_SIZE; srec += 14) { //length of s-record
-                uint32_t hintAddr = readLong(data, srec);
+                const uint32_t hintAddr = readLong(data, srec);
                 //printf("IDX = 0x%02X: ", idx);
                 //printf("hintAddr = 0x%08X, ", hintAddr);
                 //printf("fileAddr = 0x%08X, ", readLong(data, srec + 4));
                 //printf("fileSize = 0x%08X, ", readLong(data, srec + 8));
                 //printf("version = 0x%04X\n", readInt(data, srec + 12));
                 if (hintAddr != 0x00000000) { // claimed s-record
-                    bytes hintTag = readTag(hintAddr + MDDFSec);
-                    uint16_t index = readInt(hintTag, 4);
+                    bytes hintTag = readTag((int) hintAddr + MDDFSec);
+                    const uint16_t index = readInt(hintTag, 4);
+                    free(hintTag);
                     //printf("hint sector = 0x%02X, index=0x%04X\n", hintAddr + MDDFSec, index);
                     if (index < lastUsedHintIndex && index != 0x0000) { //index is 0x0000 for the 4 reserved S-file entries at the start of the listing
                         //printf("NEW LOWEST HINT INDEX: 0x%04X\n", index);
@@ -353,17 +379,18 @@ uint16_t claimNextFreeSFileIndex(int startSector, int fileSize, int sectorCount,
                 }
                 idx++;
             }
+            free(data);
         }
     }
 
-    if (lastHintAddr == -1) {
-        return -1; //not found
-    }
+    assert(lastHintAddr != -1);
+
+    const int hintAddr = (int) lastHintAddr;
 
     //claim it and return it
-    int sFileSectorToWrite = responsibleSector;
-    int indexWithinSectorToWrite = lastIdxWithinSector + 14;
-    for (int s = lastHintAddr + MDDFSec; s < SECTORS_IN_DISK; s++) {
+    const int sFileSectorToWrite = responsibleSector;
+    const int indexWithinSectorToWrite = lastIdxWithinSector + 14;
+    for (int s = hintAddr + MDDFSec; s < SECTORS_IN_DISK; s++) {
         if (isFreeSector(s)) {
             printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X, fileAddr=0x%08X, fileSize=0x%08X\n", lastIdx + 1, s, startSector, fileSize);
             //TODO responsibleSector could overflow to the next one if we're unlucky. For now, don't worry about it.
@@ -383,11 +410,12 @@ void printSFile() {
     uint16_t idx = 0;
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
-        uint16_t fileId = readInt(tag, 4);
+        const uint16_t fileId = readInt(tag, 4);
+        free(tag);
         if (fileId == 0x0003) {
             bytes data = readSector(i);
             for (int srec = 0; srec < SECTOR_SIZE; srec += 14) { //length of s-record
-                uint32_t hintAddr = readLong(data, srec);
+                const uint32_t hintAddr = readLong(data, srec);
                 if (hintAddr != 0x00000000) { // claimed s-record
                     //printf("hint sector = 0x%02X, index=0x%04X\n", hintAddr + MDDFSec, index);
                 } else {
@@ -395,16 +423,18 @@ void printSFile() {
                 }
                 idx++;
             }
+            free(data);
         }
     }
 }
 
-uint8_t calculateChecksum(int sector) {
+uint8_t calculateChecksum(const int sector) {
     uint8_t checksumByte = 0x00;
     bytes data = readSector(sector);
     for (int i = 0; i < SECTOR_SIZE; i++) {
         checksumByte = checksumByte ^ (data[i] & 0xFF);
     }
+    free(data);
 
     bytes tag = readTag(sector);
     for (int i = 0; i < TAG_SIZE; i++) {
@@ -412,6 +442,7 @@ uint8_t calculateChecksum(int sector) {
             checksumByte = checksumByte ^ (tag[i] & 0xFF);
         }
     }
+    free(tag);
 
     return checksumByte;
 }
@@ -436,7 +467,7 @@ int claimNextFreeCatalogBlock() {
                 writeTagInt(i+j, 6, 0x8200);
 
                 //abspage
-                int abspage = (i+j) - MDDFSec; //account for magic offset
+                const int abspage = (i+j) - MDDFSec; //account for magic offset
                 writeTag3Byte(i+j, 8, abspage);
 
                 //index 11 is a checksum we'll in later
@@ -449,7 +480,7 @@ int claimNextFreeCatalogBlock() {
                 if (j == 3) {
                     writeTag3Byte(i+j, 14, 0xFFFFFF);
                 } else {
-                    int fwdlink = abspage + 1;
+                    const int fwdlink = abspage + 1;
                     writeTag3Byte(i+j, 14, fwdlink);
                 }
 
@@ -457,7 +488,7 @@ int claimNextFreeCatalogBlock() {
                 if (j == 0) {
                     writeTag3Byte(i+j, 17, 0xFFFFFF);
                 } else {
-                    int bkwdlink = abspage - 1;
+                    const int bkwdlink = abspage - 1;
                     writeTag3Byte(i+j, 17, bkwdlink);
                 }
             }
@@ -511,13 +542,13 @@ int claimNextFreeCatalogBlock() {
 }
 
 // Returns 0 if equal, <0 if a < b, >0 if a > b (case-insensitive)
-int ci_strncmp(char *a, int a_len, char *b, int b_len) {
+int ci_strncmp(const char *a, const int a_len, const char *b, const int b_len) {
     int i = 0;
-    int min_len = (a_len < b_len) ? a_len : b_len;
+    const int min_len = (a_len < b_len) ? a_len : b_len;
 
     for (i = 0; i < min_len; i++) {
-        int ac = tolower((unsigned char)a[i]);
-        int bc = tolower((unsigned char)b[i]);
+        const int ac = tolower((unsigned char)a[i]);
+        const int bc = tolower((unsigned char)b[i]);
         if (ac != bc) {
             return ac - bc;
         }
@@ -537,10 +568,13 @@ void incrementMDDFFileCount() {
     uint16_t empty_file = readInt(sec, 0x9E);
     empty_file++;
     writeSectorInt(MDDFSec, 0x9E, empty_file);
+    free(sec);
 }
 
-void writeCatalogEntry(int offset, int nextFreeSFileIndex, int fileSize, int sectorCount, int nameLength, char *name) {
-    int physicalSize = sectorCount * SECTOR_SIZE;
+void writeCatalogEntry(const int offset, const int nextFreeSFileIndex, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
+    const int physicalSize = sectorCount * SECTOR_SIZE;
+
+    assert(image != NULL);
 
     image[offset] = 0x24;
 
@@ -558,11 +592,11 @@ void writeCatalogEntry(int offset, int nextFreeSFileIndex, int fileSize, int sec
         idx++;
     }
 
-    uint8_t restOfEntry[] = {
+    const uint8_t restOfEntry[] = {
         0x03, 0x06, //we're a file (lisa says 0x0306)
         (nextFreeSFileIndex >> 8) & 0xFF, nextFreeSFileIndex & 0xFF, //sfile
-        0x9D, 0x27, 0xFA, 0x88, //creation date (this one is random but I know it works)
-        0x9D, 0x27, 0xFA, 0x8F, //modification date (this one is random but I know it works)
+        0x9D, 0x27, 0xFA, 0x88, //creation date (this one is random, but I know it works)
+        0x9D, 0x27, 0xFA, 0x8F, //modification date (this one is random, but I know it works)
         (fileSize >> 24) & 0xFF, (fileSize >> 16) & 0xFF, (fileSize >> 8) & 0xFF, fileSize & 0xFF, //file size
         (physicalSize >> 24) & 0xFF, (physicalSize >> 16) & 0xFF, (physicalSize >> 8) & 0xFF, physicalSize & 0xFF, //physical file size (plus extra to fit sector bounds)
         0x00, 0x01, //fsOvrhd (? - I know this one works so let's just use it for now),
@@ -577,14 +611,14 @@ void writeCatalogEntry(int offset, int nextFreeSFileIndex, int fileSize, int sec
     incrementMDDFFileCount();
 }
 
-void claimNewCatalogEntry(uint16_t sfileid, int fileSize, int sectorCount, int nameLength, char *name) {
+void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
     bool first = true;
     for (int dirSec = 0; dirSec < SECTORS_IN_DISK; dirSec++) { //in all the possible catalogSectors. They come in 4s, always
         if (!isCatalogSector(dirSec)) {
             continue;
         }
-        bytes sec = read4Sectors(dirSec);
-        if (!(sec[0] == 0x24 && sec[1] == 0x00 && sec[2] == 0x00)) {
+        bytes dirBlock = read4Sectors(dirSec);
+        if (!(dirBlock[0] == 0x24 && dirBlock[1] == 0x00 && dirBlock[2] == 0x00)) {
             continue; //invalid block
         }
         int offsetToFirstEntry = 0;
@@ -593,18 +627,18 @@ void claimNewCatalogEntry(uint16_t sfileid, int fileSize, int sectorCount, int n
             offsetToFirstEntry = 0x4E; //seems to be the case for the first catalog sector block only
         }
 
-       uint8_t validEntryCount = sec[(SECTOR_SIZE * 4) - 11];
+       const uint8_t validEntryCount = dirBlock[(SECTOR_SIZE * 4) - 11];
        if (validEntryCount < 0x1E) { //TODO dodgy. We have space
             for (int e = 0; e < ((SECTOR_SIZE * 4) / 0x40); e++) { //loop over all entries (0x40 long each, so up to 32 per catalog block)
-                int entryOffset = offsetToFirstEntry + (e * 0x40); 
+                const int entryOffset = offsetToFirstEntry + (e * 0x40);
                 if (entryOffset >= (SECTOR_SIZE * 4) - offsetToFirstEntry - 0x80) { //there's some standard padding (0x4A?) on the end of these blocks I'd like to leave in place
                     break; //we're past the end, so try again later
                 }
 
-                if (((e + 1) < validEntryCount) && sec[entryOffset + 0] == 0x24 && sec[entryOffset + 1] == 0x00 && sec[entryOffset + 2] == 0x00) { //the magic 0x240000 defines the start of a catalog entry
+                if (((e + 1) < validEntryCount) && dirBlock[entryOffset + 0] == 0x24 && dirBlock[entryOffset + 1] == 0x00 && dirBlock[entryOffset + 2] == 0x00) { //the magic 0x240000 defines the start of a catalog entry
                     //printf("sec=%d,e=%d: used by file: ", dirSec, e);
                     for (int k = 0; k < 32; k++) { //number of bytes in a filename
-                        printf("%c", sec[entryOffset + 3 + k]);
+                        printf("%c", dirBlock[entryOffset + 3 + k]);
                     }
                     //printf(" - s-file = %02X%02X", sec[entryOffset+38] & 0xFF, sec[entryOffset+39] & 0xFF);
                     //printf(" - size = %02X%02X%02X%02X", sec[entryOffset+48] & 0xFF, sec[entryOffset+49] & 0xFF, sec[entryOffset+50] & 0xFF, sec[entryOffset+51] & 0xFF);
@@ -614,28 +648,28 @@ void claimNewCatalogEntry(uint16_t sfileid, int fileSize, int sectorCount, int n
                     // compare my filename against the existing ones.
                     // write it when I can, then write the rest.
                     // if it doesn't match, continue onwards.
-                    int cmp = ci_strncmp(name, nameLength, (char *) sec+entryOffset+3, 32);
+                    const int cmp = ci_strncmp(name, nameLength, (char *) dirBlock+entryOffset+3, 32);
                     if (cmp == 0) {
                         return; //illegal to have matching names
                     }
                     if (cmp < 0) {
-                        writeSector(dirSec + 3, SECTOR_SIZE - 11, sec[(SECTOR_SIZE*4) - 11] + 1); //claim another valid entry in this sector
-                        int catalogEntryOffset = DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
+                        writeSector(dirSec + 3, SECTOR_SIZE - 11, dirBlock[(SECTOR_SIZE*4) - 11] + 1); //claim another valid entry in this sector
+                        const int catalogEntryOffset = DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
                         //printf("Offset is 0x%02X\n", catalogEntryOffset);
 
                         //shift
                         for (int rest = e; rest < validEntryCount; rest++) {
-                            int originalOffsetOfEntryWithinBlock = offsetToFirstEntry + (rest * 0x40);
-                            int destinationOffsetOfEntryWithinBlock = originalOffsetOfEntryWithinBlock + 0x40;    
+                            const int originalOffsetOfEntryWithinBlock = offsetToFirstEntry + (rest * 0x40);
+                            const int destinationOffsetOfEntryWithinBlock = originalOffsetOfEntryWithinBlock + 0x40;
                             printf("Moving entry at offset 0x%02X to 0x%02X, beginning to write to sector %d: ", originalOffsetOfEntryWithinBlock, destinationOffsetOfEntryWithinBlock, (originalOffsetOfEntryWithinBlock / SECTOR_SIZE) + dirSec);
                             for (int k = 0; k < 32; k++) { //number of bytes in a filename
-                                printf("%c", sec[originalOffsetOfEntryWithinBlock + 3 + k]);
+                                printf("%c", dirBlock[originalOffsetOfEntryWithinBlock + 3 + k]);
                             }
                             printf("\n");
                             for (int eIdx = 0; eIdx < 64; eIdx++) { //length of catalog record
-                                int off = originalOffsetOfEntryWithinBlock + eIdx;
+                                const int off = originalOffsetOfEntryWithinBlock + eIdx;
                                 //printf("SECTOR=%d, offset within sector=%d\n", (off / SECTOR_SIZE) + dirSec, (destinationOffsetOfEntryWithinBlock+eIdx) % SECTOR_SIZE);
-                                image[DATA_OFFSET + (SECTOR_SIZE * dirSec) + destinationOffsetOfEntryWithinBlock + eIdx] = sec[off];
+                                getImage()[DATA_OFFSET + (SECTOR_SIZE * dirSec) + destinationOffsetOfEntryWithinBlock + eIdx] = dirBlock[off];
                             }
                         }
 
@@ -648,43 +682,47 @@ void claimNewCatalogEntry(uint16_t sfileid, int fileSize, int sectorCount, int n
                 } else {
                     bytes sec = readSector(dirSec + 3);
                     writeSector(dirSec + 3, SECTOR_SIZE - 11, sec[SECTOR_SIZE - 11] + 1); //claim another valid entry in this sector
+                    free(sec);
                     writeCatalogEntry(DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
                     printf("Found space for a new catalog entry (appending) at offset 0x%X\n", entryOffset);
                     return;
                 }
             }
        }
+        free(dirBlock);
         dirSec += 3; // skip past the rest in this block
     }
 
     //no space found, so let's make some
     printf("No space found for a new entry. Creating some...\n");
-    int nextFreeBlock = claimNextFreeCatalogBlock();
+    const int nextFreeBlock = claimNextFreeCatalogBlock();
     printf("Space to create new catalog block claimed at sector = %d\n", nextFreeBlock);
     bytes sec = readSector(nextFreeBlock + 3);
     writeSector(nextFreeBlock + 3, SECTOR_SIZE - 11, sec[SECTOR_SIZE - 11] + 1); //claim another valid entry in this sector
+    free(sec);
     writeCatalogEntry(DATA_OFFSET + (nextFreeBlock * SECTOR_SIZE), sfileid, fileSize, sectorCount, nameLength, name);
 }
 
 void fixAllTagChecksums() {
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
-        uint8_t checksum = calculateChecksum(i);
+        const uint8_t checksum = calculateChecksum(i);
         if ((checksum & 0xFF) != (tag[11] & 0xFF)) {
             //printf("Checksum invalid for sector %d. Fixing...\n", i);
             writeTag(i, 11, (checksum & 0xFF));
         }
+        free(tag);
     }
 }
 
-void writeFileTagBytes(int startSector, int sectorCount, uint16_t sfileid) {
+void writeFileTagBytes(const int startSector, const int sectorCount, const uint16_t sfileid) {
     for (int i = 0; i < sectorCount; i++) {
-        int sectorToWrite = startSector + i;
-        uint32_t abspage = sectorToWrite - MDDFSec;
+        const int sectorToWrite = startSector + i;
+        const uint32_t abspage = sectorToWrite - MDDFSec;
         writeTagInt(sectorToWrite, 0, 0x0000); //version (2 bytes)
         writeTagInt(sectorToWrite, 2, 0x0000); //vol (2 bytes)
         writeTagInt(sectorToWrite, 4, sfileid); //file ID (2 bytes)
-        writeTagInt(sectorToWrite, 6, 0x8200); //dataused (2 bytes. 0x8200, standard, it seems)
+        writeTagInt(sectorToWrite, 6, 0x8200); //dataused. 2 bytes. 0x8200, standard, it seems
         writeTag3Byte(sectorToWrite, 8, abspage);
         // index 11 is checksum (1 byte - will be fixed later)
         writeTagInt(sectorToWrite, 12, i); // relpage (2 bytes)
@@ -703,7 +741,7 @@ void writeFileTagBytes(int startSector, int sectorCount, uint16_t sfileid) {
     }
 }
 
-int findStartingSector(int contiguousSectors) {
+int findStartingSector(const int contiguousSectors) {
     for (int i = SECTORS_IN_DISK - contiguousSectors - 0x400; i > MDDFSec + 0x400; i--) { //TODO let's start a bit in to be safe. Also start at the end to avoid clobbering by Lisa
         bool free = true;
         for (int j = 0; j < contiguousSectors; j++) {
@@ -727,7 +765,7 @@ int main (int argc, char *argv[]) {
     findBitmapSec();
 
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        uint8_t calculatedChecksum = calculateChecksum(i);
+        const uint8_t calculatedChecksum = calculateChecksum(i);
         printf("sec %d (0x%02X) (offset=0x%02X) with chksum 0x%02X:", i, i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
         bytes tag = readTag(i);
         for (int j = 0; j < TAG_SIZE; j++) {
@@ -756,13 +794,12 @@ int main (int argc, char *argv[]) {
 
     // get the file we want to write
     //TODO HARDCODED
-    int nameLength = 13;
+    const int nameLength = 13;
     char *name = "genedata.Text";
 
-    FILE *fileptr;
-    fileptr = fopen(name, "rb");     // Open the file in binary mode
+    FILE *fileptr = fopen(name, "rb");     // Open the file in binary mode
     fseek(fileptr, 0, SEEK_END);
-    int rawFileSize = ftell(fileptr);
+    const int rawFileSize = (int) ftell(fileptr);
     fseek(fileptr, 0, SEEK_SET);
     bytes filedata = (bytes) malloc(rawFileSize * sizeof(uint8_t)); // Enough memory for the file
     fread(filedata, rawFileSize, 1, fileptr); // Read in the entire file
@@ -791,7 +828,7 @@ int main (int argc, char *argv[]) {
         }
         if (bytesWritten % BLOCK_SIZE > (BLOCK_SIZE - 0x60) && justWroteNewline) {
             // TODO write some padding and account with the offsets
-            int padding = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
+            const int padding = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
             printf("        - bytesWritten = 0x%02X, adding 0x%02X bytes of padding\n", bytesWritten, padding);
             for (int j = 0; j < padding; j++) {
                 //write the footer to each sector
@@ -818,7 +855,7 @@ int main (int argc, char *argv[]) {
         }
     }
     printf("    - wrote data. bytesWritten=0x%2X\n", bytesWritten);
-    int remaining = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
+    const int remaining = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
     printf("    - (remaining = 0x%2X)\n", remaining);
     for (int i = 0; i < remaining; i++) {
         dataBuf[bytesWritten++] = 0x00;
@@ -828,11 +865,11 @@ int main (int argc, char *argv[]) {
     printf("Final buffer length = 0x%2X\n", bytesWritten);
 
     // do the work
-    int sectorCount = getSectorCount(bytesWritten);
+    const int sectorCount = getSectorCount(bytesWritten);
     printf("sectorCount = 0x%2X\n", sectorCount);
-    int startSector = findStartingSector(sectorCount); // allocate contiguously to be nice about it
+    const int startSector = findStartingSector(sectorCount); // allocate contiguously to be nice about it
 
-    uint16_t sfileid = claimNextFreeSFileIndex(startSector, bytesWritten, sectorCount, nameLength, name);
+    const uint16_t sfileid = claimNextFreeSFileIndex(startSector, bytesWritten, sectorCount, nameLength, name);
 
     claimNewCatalogEntry(sfileid, bytesWritten, sectorCount, nameLength, name);
 
