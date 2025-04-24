@@ -23,6 +23,8 @@ const int SECTORS_IN_DISK = 0x2600;  // for 5MB ProFile
 bytes image = NULL;
 int MDDFSec;
 int bitmapSec;
+int sFileSec;
+int sfileBlockCount;
 uint16_t lastUsedHintIndex = 0xFFFB; //seems to be where these start
 bool initialized = false;
 
@@ -85,6 +87,27 @@ bytes readTag(const int sector) {
     return tag;
 }
 
+uint8_t readMDDFByte(const int offset) {
+    bytes sec = readSector(MDDFSec);
+    const uint8_t b = sec[offset];
+    free(sec);
+    return b;
+}
+
+uint16_t readMDDFInt(const int offset) {
+    bytes sec = readSector(MDDFSec);
+    const uint16_t i = readInt(sec, offset);
+    free(sec);
+    return i;
+}
+
+uint32_t readMDDFLong(const int offset) {
+    bytes sec = readSector(MDDFSec);
+    const uint32_t i = readLong(sec, offset);
+    free(sec);
+    return i;
+}
+
 void writeTag(const int sector, const int offset, const uint8_t data) {
     getImage()[DATA_OFFSET + (SECTORS_IN_DISK * SECTOR_SIZE) + (sector * TAG_SIZE) + offset] = data;
 }
@@ -138,21 +161,20 @@ void findMDDFSec() {
         free(tag);
         if (type == 0x0001) {
             MDDFSec = i;
+            printf("mddfsec: 0x%02X\n", MDDFSec);
             return;
         }
     }
 }
 
 void findBitmapSec() {
-    for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        bytes tag = readTag(i);
-        const uint16_t type = readInt(tag, 4);
-        free(tag);
-        if (type == 0x0002) {
-            bitmapSec = i;
-            return;
-        }
-    }
+    bitmapSec = (int) readMDDFLong(0x88) + MDDFSec;
+}
+
+void findSFileSec() {
+    sFileSec = (int) readMDDFLong(0x94) + MDDFSec;
+    sfileBlockCount = (int) readMDDFInt(0x9A);
+    printf("emptyfile: 0x%02X\n", readMDDFInt(0x9E));
 }
 
 void printSectorType(const int sector) {
@@ -196,9 +218,7 @@ bool isFreeSector(const int sector) {
 }
 
 void decrementMDDFFreeCount() {
-    bytes sec = readSector(MDDFSec);
-    uint32_t freeCount = readLong(sec, 0xBA);
-    free(sec);
+    uint32_t freeCount = readMDDFLong(0xBA);
     freeCount--;
     writeSectorLong(MDDFSec, 0xBA, freeCount);
 }
@@ -299,56 +319,54 @@ int getSectorCount(const int fileSize) {
     return (int) ceil((double) fileSize / SECTOR_SIZE);
 }
 
-//returns the index of the s-file (the file ID)
-uint16_t claimNextFreeSFileIndex(const int startSector, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
-    int responsibleSector = -1;
-    int lastIdx = -1;
-    int lastIdxWithinSector = -1;
-    uint32_t lastHintAddr = -1;
-
+int findNextFreeSFileIndex() {
+    const uint16_t slist_packing = readMDDFInt(0x98); //number of s_entries per block in slist
+    int lastIdx = readMDDFInt(0x9C); //the minimum sfile we can use per the MDDF
     uint16_t idx = 0;
-    for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        bytes tag = readTag(i);
-        const uint16_t fileId = readInt(tag, 4);
-        free(tag);
-        if (fileId == 0x0003) {
-            bytes data = readSector(i);
-            for (int srec = 0; srec < SECTOR_SIZE; srec += 14) { //length of s-record
-                const uint32_t hintAddr = readLong(data, srec);
-                //printf("IDX = 0x%02X: ", idx);
-                //printf("hintAddr = 0x%08X, ", hintAddr);
-                //printf("fileAddr = 0x%08X, ", readLong(data, srec + 4));
-                //printf("fileSize = 0x%08X, ", readLong(data, srec + 8));
-                //printf("version = 0x%04X\n", readInt(data, srec + 12));
-                if (hintAddr != 0x00000000) { // claimed s-record
-                    bytes hintTag = readTag((int) hintAddr + MDDFSec);
-                    const uint16_t index = readInt(hintTag, 4);
-                    free(hintTag);
-                    if (index < lastUsedHintIndex && index != 0x0000) { //index is 0x0000 for the 4 reserved S-file entries at the start of the listing
-                        lastUsedHintIndex = index;
-                    }
-
-                    responsibleSector = i;
-                    lastIdx = idx;
-                    lastIdxWithinSector = srec;
-                    lastHintAddr = hintAddr;
+    printf("SFILESEC = 0x%02X\n", sFileSec);
+    for (int i = sFileSec; i < (sFileSec + sfileBlockCount); i++) {
+        bytes data = readSector(i);
+        for (int sfileIdx = 0; sfileIdx < slist_packing; sfileIdx++) {
+            int srec = sfileIdx * 14; //length of srecord
+            const uint32_t hintAddr = readLong(data, srec);
+            printf("IDX = 0x%02X: ", idx);
+            printf("hintAddr = 0x%08X, ", hintAddr);
+            printf("fileAddr = 0x%08X, ", readLong(data, srec + 4));
+            printf("fileSize = 0x%08X, ", readLong(data, srec + 8));
+            printf("version = 0x%04X\n", readInt(data, srec + 12));
+            if (hintAddr != 0x00000000) { // claimed s-record
+                bytes hintTag = readTag((int) hintAddr + MDDFSec);
+                const uint16_t index = readInt(hintTag, 4);
+                free(hintTag);
+                if (index < lastUsedHintIndex && index != 0x0000) { //index is 0x0000 for the 4 reserved S-file entries at the start of the listing
+                    lastUsedHintIndex = index;
                 }
-                idx++;
+                lastIdx = idx;
             }
-            free(data);
+            idx++;
         }
+        free(data);
     }
 
-    assert(lastHintAddr != -1);
+    lastIdx++; //next one is free, then
+    return lastIdx;
+}
 
-    const int hintAddr = (int) lastHintAddr;
+
+//returns the index of the s-file (the file ID)
+uint16_t claimNextFreeSFileIndex(const int startSector, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
+    int emptyFile = readMDDFInt(0x9E);
+
+    const int whereToStart = sFileSec + sfileBlockCount; // TODO start after this, roughly. Might need to be more stringent
+
+    const uint16_t slist_packing = readMDDFInt(0x98); //number of s_entries per block in slist
 
     //claim it and return it
-    const int sFileSectorToWrite = responsibleSector;
-    const int indexWithinSectorToWrite = lastIdxWithinSector + 14;
-    for (int s = hintAddr + MDDFSec; s < SECTORS_IN_DISK; s++) {
+    const int sFileSectorToWrite = (emptyFile / slist_packing) + sFileSec;
+    const int indexWithinSectorToWrite = (emptyFile - ((sFileSectorToWrite - sFileSec) * slist_packing)) * 14; //length of srecord
+    for (int s = whereToStart; s < SECTORS_IN_DISK; s++) {
         if (isFreeSector(s)) {
-            printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X, fileAddr=0x%08X, fileSize=0x%08X\n", lastIdx + 1, s, startSector, fileSize);
+            printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X, fileAddr=0x%08X, fileSize=0x%08X\n", emptyFile, s, startSector, fileSize);
             //TODO responsibleSector could overflow to the next one if we're unlucky. For now, don't worry about it.
             writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite, s - MDDFSec); //location of our hint sector
             writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 4, startSector - MDDFSec); // fileAddr
@@ -356,31 +374,34 @@ uint16_t claimNextFreeSFileIndex(const int startSector, const int fileSize, cons
             writeSectorInt(sFileSectorToWrite, indexWithinSectorToWrite + 12, 0x0000); //version
 
             claimNextFreeHintSector(s, startSector, sectorCount, nameLength, name);
-            return lastIdx;
+
+            int newEmptyFile = findNextFreeSFileIndex();
+            printf("new empty file = 0x%02X\n", newEmptyFile);
+            writeSectorInt(MDDFSec, 0x9E, newEmptyFile);
+
+            return emptyFile;
         }
     }
+
     return -1; // no space
 }
 
 void printSFile() {
+    const uint16_t slist_packing = readMDDFInt(0x98); //number of s_entries per block in slist
     uint16_t idx = 0;
-    for (int i = 0; i < SECTORS_IN_DISK; i++) {
-        bytes tag = readTag(i);
-        const uint16_t fileId = readInt(tag, 4);
-        free(tag);
-        if (fileId == 0x0003) {
-            bytes data = readSector(i);
-            for (int srec = 0; srec < SECTOR_SIZE; srec += 14) { //length of s-record
-                const uint32_t hintAddr = readLong(data, srec);
-                if (hintAddr != 0x00000000) { // claimed s-record
-                    printf("hint sector = 0x%02X, index=0x%04X\n", hintAddr + MDDFSec, idx);
-                } else {
-                    printf("FREE IDX = 0x%02X\n", idx);
-                }
-                idx++;
-            }
-            free(data);
+    for (int i = sFileSec; i < (sFileSec + sfileBlockCount); i++) {
+        bytes data = readSector(i);
+        for (int sfileIdx = 0; sfileIdx < slist_packing; sfileIdx++) {
+            int srec = sfileIdx * 14; //length of srecord
+            const uint32_t hintAddr = readLong(data, srec);
+            printf("IDX = 0x%02X: ", idx);
+            printf("hintAddr = 0x%08X, ", hintAddr);
+            printf("fileAddr = 0x%08X, ", readLong(data, srec + 4));
+            printf("fileSize = 0x%08X, ", readLong(data, srec + 8));
+            printf("version = 0x%04X\n", readInt(data, srec + 12));
+            idx++;
         }
+        free(data);
     }
 }
 
@@ -512,16 +533,9 @@ int ci_strncmp(const char *a, const int a_len, const char *b, const int b_len) {
 }
 
 void incrementMDDFFileCount() {
-    bytes sec = readSector(MDDFSec);
-    uint16_t fileCount = readInt(sec, 0xB0);
+    uint16_t fileCount = readMDDFInt(0xB0);
     fileCount++;
     writeSectorInt(MDDFSec, 0xB0, fileCount);
-
-    // empty_files increments when you create an s-file. see new_sfile(). TODO seems wrong though.
-    uint16_t empty_file = readInt(sec, 0x9E);
-    empty_file++;
-    writeSectorInt(MDDFSec, 0x9E, empty_file);
-    free(sec);
 }
 
 void writeCatalogEntry(const int offset, const int nextFreeSFileIndex, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
@@ -782,8 +796,9 @@ int main (int argc, char *argv[]) {
     readFile();
     findMDDFSec();
     findBitmapSec();
+    findSFileSec();
 
-    printSFile();
+    //printSFile();
 
     /*
     for (int i = 0; i < 0; i++) {
@@ -804,8 +819,8 @@ int main (int argc, char *argv[]) {
     */
 
     // get the file we want to write
+    writeFile(7, "g2.text");
     writeFile(7, "g3.text");
-    //writeFile(7, "g2.text");
 
     // cleanup and close
 
