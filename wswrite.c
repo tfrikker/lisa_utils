@@ -323,7 +323,6 @@ int findNextFreeSFileIndex() {
     const uint16_t slist_packing = readMDDFInt(0x98); //number of s_entries per block in slist
     int lastIdx = readMDDFInt(0x9C); //the minimum sfile we can use per the MDDF
     uint16_t idx = 0;
-    printf("SFILESEC = 0x%02X\n", sFileSec);
     for (int i = sFileSec; i < (sFileSec + sfileBlockCount); i++) {
         bytes data = readSector(i);
         for (int sfileIdx = 0; sfileIdx < slist_packing; sfileIdx++) {
@@ -378,7 +377,6 @@ uint16_t claimNextFreeSFileIndex(const int startSector, const int fileSize, cons
             claimNextFreeHintSector(s, startSector, sectorCount, nameLength, name);
 
             int newEmptyFile = findNextFreeSFileIndex();
-            printf("new empty file = 0x%02X\n", newEmptyFile);
             writeSectorInt(MDDFSec, 0x9E, newEmptyFile);
 
             return emptyFile;
@@ -526,7 +524,6 @@ int ci_strncmp(const char *a, const int a_len, const char *b, const int b_len) {
         const int ac = toupper((unsigned char) a[i]);
         const int bc = toupper((unsigned char) b[i]);
         if (ac != bc) {
-            printf("comparing chars %c (0x%02X) and %c (0x%02X)\n", ac, ac, bc, bc);
             return ac - bc;
         }
     }
@@ -582,7 +579,6 @@ void writeCatalogEntry(const int offset, const int nextFreeSFileIndex, const int
 }
 
 uint8_t getCatalogEntryCountForBlock(const int dirSec) {
-    printf("READ! dirSec=0x%02X\n", dirSec);
     bytes sec = readSector(dirSec + 3);
     const uint8_t count = sec[SECTOR_SIZE - 11];
     free(sec);
@@ -591,7 +587,6 @@ uint8_t getCatalogEntryCountForBlock(const int dirSec) {
 
 void claimNewCatalogEntrySpace(const int dirSec, const int entryOffset, const int sfileid, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
     writeSector(dirSec + 3, SECTOR_SIZE - 11, getCatalogEntryCountForBlock(dirSec) + 1); //claim another valid entry in this sector
-    printf("INCREMENTED! dirSec=0x%02X\n", dirSec);
     writeCatalogEntry(DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
 }
 
@@ -620,17 +615,6 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
         const uint8_t validEntryCount = getCatalogEntryCountForBlock(dirSec) - 1;
         const int firstEntryOffset = offsetToFirstEntry;
         const int lastEntryOffset = offsetToFirstEntry + (validEntryCount * 0x40);
-        printf("first entry: ");
-        for (int i = 0; i < 32; i++) {
-            printf("%c", dirBlock[firstEntryOffset + 3 + i]);
-        }
-        printf("\n");
-        printf("last entry: ");
-        for (int i = 0; i < 32; i++) {
-            printf("%c", dirBlock[lastEntryOffset + 3 + i]);
-        }
-        printf("\n");
-
 
         const int cmpFirst = ci_strncmp(name, nameLength, (char *) dirBlock + firstEntryOffset + 3, 32);
         const int cmpLast = ci_strncmp(name, nameLength, (char *) dirBlock + lastEntryOffset + 3, 32);
@@ -651,9 +635,8 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
                     closestDirName[i] = (char) dirBlock[lastEntryOffset + 3 + i];
                 }
                 closestDirSec = dirSec;
-                printf("Block ends before us. First time: dirSec now = 0x%02X\n", closestDirSec);
             } else {
-                //TODO compare the endings to see who's closer. Keep a running count
+                // compare the endings to see who's closer. Keep a running count
                 const int cmpCloser = ci_strncmp(closestDirName, 32, (char *) dirBlock + lastEntryOffset + 3, 32);
                 if (cmpCloser < 0) {
                     free(closestDirName);
@@ -662,7 +645,6 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
                         closestDirName[i] = (char) dirBlock[lastEntryOffset + 3 + i];
                     }
                     closestDirSec = dirSec;
-                    printf("Block ends before us. NEW: dirSec now = 0x%02X\n", closestDirSec);
                 }
             }
         }
@@ -679,32 +661,22 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
 
 void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
     const int relevantCatalogSec = findRelevantCatalogSector(nameLength, name);
-    printf("relevant catalog sector = 0x%02X\n", relevantCatalogSec);
-
     const uint8_t entryCount = getCatalogEntryCountForBlock(relevantCatalogSec) - 1;
-    printf("entry count = 0x%02X\n", entryCount);
     if (entryCount != 0x1E) { //we have space
         const int firstCatalogSector = (int) readMDDFLong(0x12E);
-        printf("first catalog sector = 0x%02X\n", firstCatalogSector);
         int offsetToFirstEntry = 0;
         if (relevantCatalogSec == firstCatalogSector) {
             offsetToFirstEntry = 0x4E; //seems to be the case for the first catalog sector block only
         }
         bytes dirBlock = read4Sectors(relevantCatalogSec);
-        //TODO dodgy. We have space
-        //printf("validEntryCount says we have space\n");
         for (int e = 0; e < entryCount; e++) { //loop over all entries (0x40 long each, so up to 32 per catalog block)
             const int entryOffset = offsetToFirstEntry + (e * 0x40);
-            // compare my filename against the existing ones.
-            // write it when I can, then write the rest.
-            // if it doesn't match, continue onwards.
             const int cmp = ci_strncmp(name, nameLength, (char *) dirBlock + entryOffset + 3, 32);
             if (cmp == 0) {
                 return; //illegal to have matching names
             }
             if (cmp < 0) {
                 const int catalogEntryOffset = DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
-                printf("catalogEntryOffset: 0x%02X\n", catalogEntryOffset);
                 //shift
                 for (int rest = e; rest < entryCount; rest++) {
                     const int originalOffsetOfEntryWithinBlock = offsetToFirstEntry + (rest * 0x40);
@@ -868,7 +840,6 @@ void writeFile(const int nameLength, const char *name, bool isPascal) {
 
     // do the work
     const int sectorCount = getSectorCount(bytesWritten);
-    printf("sectorCount = 0x%2X\n", sectorCount);
     const int startSector = findStartingSector(sectorCount); // allocate contiguously to be nice about it
 
     const uint16_t sfileid = claimNextFreeSFileIndex(startSector, bytesWritten, sectorCount, nameLength, name);
@@ -885,7 +856,7 @@ void writeFile(const int nameLength, const char *name, bool isPascal) {
     writeFileTagBytes(startSector, sectorCount, sfileid);
     free(dataBuf);
     free(filedata);
-    printf("_______________________\n");
+    printf("______________________________________________\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -917,8 +888,8 @@ int main(int argc, char *argv[]) {
     */
 
     // get the file we want to write
-    writeFile(7, "g1.text", true);
-    writeFile(7, "g2.text", true);
+    writeFile(10, "hwint.text", true);
+    writeFile(11, "stunts.text", true);
     //writeFile(7, "g5.text", false);
     //writeFile(7, "g6.text", false);
     //writeFile(7, "g2.text");
