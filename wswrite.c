@@ -580,6 +580,13 @@ void writeCatalogEntry(const int offset, const int nextFreeSFileIndex, const int
     incrementMDDFFileCount();
 }
 
+void claimNewCatalogEntrySpace(const int dirSec, const int entryOffset, const int sfileid, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
+    bytes sec = readSector(dirSec + 3);
+    writeSector(dirSec + 3, SECTOR_SIZE - 11, sec[SECTOR_SIZE - 11] + 1); //claim another valid entry in this sector
+    free(sec);
+    writeCatalogEntry(DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
+}
+
 void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
     bool first = true;
     for (int dirSec = 0; dirSec < SECTORS_IN_DISK; dirSec++) { //in all the possible catalogSectors. They come in 4s, always
@@ -628,11 +635,8 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
                         return;
                     }
                 } else {
-                    bytes sec = readSector(dirSec + 3);
-                    writeSector(dirSec + 3, SECTOR_SIZE - 11, sec[SECTOR_SIZE - 11] + 1); //claim another valid entry in this sector
-                    free(sec);
-                    writeCatalogEntry(DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
                     printf("Found space for a new catalog entry (appending) at offset 0x%X\n", entryOffset);
+                    claimNewCatalogEntrySpace(dirSec, entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
                     return;
                 }
             }
@@ -645,10 +649,7 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
     printf("No space found for a new entry. Creating some...\n");
     const int nextFreeBlock = claimNextFreeCatalogBlock();
     printf("Space to create new catalog block claimed at sector = %d\n", nextFreeBlock);
-    bytes sec = readSector(nextFreeBlock + 3);
-    writeSector(nextFreeBlock + 3, SECTOR_SIZE - 11, sec[SECTOR_SIZE - 11] + 1); //claim another valid entry in this sector
-    free(sec);
-    writeCatalogEntry(DATA_OFFSET + (nextFreeBlock * SECTOR_SIZE), sfileid, fileSize, sectorCount, nameLength, name);
+    claimNewCatalogEntrySpace(nextFreeBlock, 0, sfileid, fileSize, sectorCount, nameLength, name);
 }
 
 void fixAllTagChecksums() {
