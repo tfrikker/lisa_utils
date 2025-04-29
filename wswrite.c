@@ -254,7 +254,7 @@ _ = (standardized? Check more examples?)
 
 void writeHintEntry(const int sector, const int startSector, const int sectorCount, const int nameLength, const char *name) {
     zeroSector(sector);
-    writeSector(sector, 0, 0x0D); //name length
+    writeSector(sector, 0, nameLength); //name length
     for (int i = 0; i < nameLength; i++) { //bytes we have to write
         writeSector(sector, i + 1, name[i]);
     }
@@ -352,7 +352,6 @@ int findNextFreeSFileIndex() {
     lastIdx++; //next one is free, then
     return lastIdx;
 }
-
 
 //returns the index of the s-file (the file ID)
 uint16_t claimNextFreeSFileIndex(const int startSector, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
@@ -767,7 +766,7 @@ int findStartingSector(const int contiguousSectors) {
     return -1; // not found
 }
 
-void writeFile(const int nameLength, const char *name, bool isPascal) {
+void writeFile(const int nameLength, const char *name, bool isPascal, bool isText) {
     printf("___________ Writing file: ");
     for (int i = 0; i < nameLength; i++) {
         printf("%c", name[i]);
@@ -786,8 +785,10 @@ void writeFile(const int nameLength, const char *name, bool isPascal) {
     // write the data to a buffer
     bytes dataBuf = (bytes) malloc(rawFileSize * 2 * sizeof(uint8_t)); // Enough memory for the file with some leeway
     int bytesWritten = 0;
-    for (int i = 0; i < BLOCK_SIZE; i++) { //1KB of header on text files
-        dataBuf[bytesWritten++] = 0x00;
+    if (isText) {
+        for (int i = 0; i < BLOCK_SIZE; i++) { //1KB of header on text files
+            dataBuf[bytesWritten++] = 0x00;
+        }
     }
     printf("    - wrote header. bytesWritten=0x%02X\n", bytesWritten);
     bool justWroteSemi = false;
@@ -797,7 +798,7 @@ void writeFile(const int nameLength, const char *name, bool isPascal) {
         if (b == 0x0A) {
             b = 0x0D; //replace Mac style line breaks with Lisa style
         }
-        if (bytesWritten % BLOCK_SIZE == BLOCK_SIZE - 1) {
+        if (isText && (bytesWritten % BLOCK_SIZE == BLOCK_SIZE - 1)) {
             printf("ERROR! There was no padding added here.\n");
             assert(false);
         }
@@ -888,8 +889,8 @@ int main(int argc, char *argv[]) {
     */
 
     // get the file we want to write
-    writeFile(10, "hwint.text", true);
-    writeFile(11, "stunts.text", true);
+    writeFile(11, "INSANE.TEXT", true, true);
+    //writeFile(11, "stunts.text", true);
     //writeFile(7, "g5.text", false);
     //writeFile(7, "g6.text", false);
     //writeFile(7, "g2.text");
