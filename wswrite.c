@@ -432,8 +432,8 @@ int claimNextFreeCatalogBlock() {
                 //version
                 writeTagInt(i + j, 0, 0x0000);
 
-                //volid (TODO 0x2500 seems standard for this disk at least?)
-                writeTagInt(i + j, 2, 0x2500);
+                //volid (TODO 0x2500 is used sometimes for this disk at least?)
+                writeTagInt(i + j, 2, 0x0000);
 
                 //fileid (always 0x0004 for catalog sectors)
                 writeTagInt(i + j, 4, 0x0004);
@@ -483,30 +483,13 @@ int claimNextFreeCatalogBlock() {
                 writeSectorInt(i+3, SECTOR_SIZE - 14 - (j * 2), j * 64); // set up the special index entries (not sure of the actual name)
             }
 
+            writeSectorLong(i + 3, SECTOR_SIZE - 10, 0xFFFFFFFF);
+            writeSectorLong(i + 3, SECTOR_SIZE - 6, 0xFFFFFFFF);
+
             fixFreeBitmap(i);
             fixFreeBitmap(i + 1);
             fixFreeBitmap(i + 2);
             fixFreeBitmap(i + 3);
-
-            /* TODO not sure if this is quite right.
-            //TODO for testing - forward link from the last used catalog sector
-            printf("WRITING FORWARD LINK from sector %d (+3) to %d\n", lastUsedDirSec, i);
-            int secToWrite = i - MDDFSec; //magic number
-            writeSector(lastUsedDirSec+3, SECTOR_SIZE - 6, (secToWrite << 24) & 0xFF);
-            writeSector(lastUsedDirSec+3, SECTOR_SIZE - 5, (secToWrite << 16) & 0xFF);
-            writeSector(lastUsedDirSec+3, SECTOR_SIZE - 4, (secToWrite << 8) & 0xFF);
-            writeSector(lastUsedDirSec+3, SECTOR_SIZE - 3, secToWrite & 0xFF);
-
-            //TODO for testing - backward link to the last catalog sector start
-            writeSector(i+3, SECTOR_SIZE - 10, 0x00);
-            writeSector(i+3, SECTOR_SIZE - 9, 0x00);
-            writeSector(i+3, SECTOR_SIZE - 8, 0x00);
-            writeSector(i+3, SECTOR_SIZE - 7, 0x39);
-
-            //0x00FF always ends it
-            writeSector(i+3, SECTOR_SIZE - 2, 0x00);
-            writeSector(i+3, SECTOR_SIZE - 1, 0x00);
-            */
 
             decrementMDDFFreeCount();
             decrementMDDFFreeCount();
@@ -519,8 +502,8 @@ int claimNextFreeCatalogBlock() {
     return -1;
 }
 
-// Returns 0 if equal, <0 if a < b, >0 if a > b (case-insensitive)
-int ci_strncmp(const char *a, const int a_len, const char *b, const int b_len) {
+// Returns true if a < b, false otherwise (case insensitive)
+bool ci_a_before_b(const char *a, const int a_len, const char *b, const int b_len) {
     int i = 0;
     const int min_len = (a_len < b_len) ? a_len : b_len;
 
@@ -528,12 +511,12 @@ int ci_strncmp(const char *a, const int a_len, const char *b, const int b_len) {
         const int ac = toupper((unsigned char) a[i]);
         const int bc = toupper((unsigned char) b[i]);
         if (ac != bc) {
-            return ac - bc;
+            return ac < bc;
         }
     }
 
     // If equal so far, decide based on length
-    return a_len - b_len;
+    return a_len < b_len;
 }
 
 void incrementMDDFFileCount() {
@@ -586,11 +569,14 @@ uint8_t getNextAvailableCatalogEntryIdxForBlock(const int dirSec) {
     bytes sec = readSector(dirSec + 3);
     const uint8_t count = sec[SECTOR_SIZE - 11];
     free(sec);
+    printf("GETTING NEXT AVAILABLE FOR SECTOR = 0x%02X: 0x%02X\n", dirSec, count);
     return count;
 }
 
 void claimNewCatalogEntrySpace(const int dirSec, const int entryOffset, const int sfileid, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
-    writeSector(dirSec + 3, SECTOR_SIZE - 11, getNextAvailableCatalogEntryIdxForBlock(dirSec) + 1); //claim another valid entry in this sector
+    int entry = getNextAvailableCatalogEntryIdxForBlock(dirSec) + 1;
+    writeSector(dirSec + 3, SECTOR_SIZE - 11, entry); //claim another valid entry in this sector
+    printf("WRITING 0x%02X\n", entry);
     writeCatalogEntry(DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
 }
 
@@ -618,35 +604,42 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
 
         const uint8_t validEntryCount = getNextAvailableCatalogEntryIdxForBlock(dirSec) - 1;
         const int firstEntryOffset = offsetToFirstEntry;
-        const int lastEntryOffset = offsetToFirstEntry + (validEntryCount * 0x40);
+        const int lastEntryOffset = offsetToFirstEntry + ((validEntryCount - 1) * 0x40);
+        //printf("sector = %d, validEntryCount = %d, first = %d, last = %d\n", dirSec, validEntryCount, firstEntryOffset, lastEntryOffset);
 
-        const int cmpFirst = ci_strncmp(name, nameLength, (char *) dirBlock + firstEntryOffset + 3, 32);
-        const int cmpLast = ci_strncmp(name, nameLength, (char *) dirBlock + lastEntryOffset + 3, 32);
 
-        if (cmpFirst > 0 && cmpLast < 0) {
+        const bool nameBeforeFirst = ci_a_before_b(name, nameLength, (char *) dirBlock + firstEntryOffset + 3, 32);
+        const bool nameBeforeLast = ci_a_before_b(name, nameLength, (char *) dirBlock + lastEntryOffset + 3, 32);
+
+        if (!nameBeforeFirst && nameBeforeLast) {
             free(dirBlock);
             if (closestDirName != NULL) {
                 free(closestDirName);
             }
-            //printf("Contained in a block!\n");
+            printf("Contained in a block!\n");
             return dirSec; // this block contains us
         }
 
-        if (cmpLast > 0) { //if this block ends before us
+        if (!nameBeforeLast) { //if this block ends before us
             if (closestDirName == NULL) { //the first time
                 closestDirName = (char *) malloc(32 * sizeof(char));
                 for (int i = 0; i < 32; i++) {
                     closestDirName[i] = (char) dirBlock[lastEntryOffset + 3 + i];
+                    printf("%c", closestDirName[i]);
                 }
+                printf("\n");
                 closestDirSec = dirSec;
             } else {
                 // compare the endings to see who's closer. Keep a running count
-                const int cmpCloser = ci_strncmp(closestDirName, 32, (char *) dirBlock + lastEntryOffset + 3, 32);
-                if (cmpCloser < 0) {
+                const bool lastAfterRunningClosest = ci_a_before_b(closestDirName, 32, (char *) dirBlock + lastEntryOffset + 3, 32);
+                if (lastAfterRunningClosest) {
                     for (int i = 0; i < 32; i++) {
                         closestDirName[i] = (char) dirBlock[lastEntryOffset + 3 + i];
+                        printf("%c", closestDirName[i]);
                     }
+                    printf("\n");
                     closestDirSec = dirSec;
+                    printf("closestDirSec now = %d\n", closestDirSec);
                 }
             }
         }
@@ -661,53 +654,75 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
     return closestDirSec; // we weren't contained in any, so return the closest one
 }
 
+int getEntryToMove(bytes dirBlock, int offsetToFirstEntry, int entryCount, const char *name, int nameLength) {
+    for (int e = 0; e < entryCount; e++) { //loop over all entries (0x40 long each, so up to 32 per catalog block)
+        const int entryOffset = offsetToFirstEntry + (e * 0x40);
+        const bool nameBeforeExistingEntry = ci_a_before_b(name, nameLength, (char *) dirBlock + entryOffset + 3, 32);
+        for (int i = 0; i < 32; i++) {
+            printf("%c", *(dirBlock + entryOffset + 3 + i));
+        }
+        printf("\n");
+        if (nameBeforeExistingEntry) {
+            printf("Name was before this entry! Name:" );
+            for (int i = 0; i < nameLength; i++) {
+                printf("%c", name[i]);
+            }
+            printf("\n");
+            return e;
+        }
+    }
+    return entryCount;
+}
+
 void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
-    const int relevantCatalogSec = findRelevantCatalogSector(nameLength, name);
-    const uint8_t entryCount = getNextAvailableCatalogEntryIdxForBlock(relevantCatalogSec) - 1; // this field is the next available index, so -1 is the count
     const int firstCatalogSector = (int) readMDDFLong(0x12E);
+    const int relevantCatalogSec = findRelevantCatalogSector(nameLength, name);
+    uint8_t entryCount = getNextAvailableCatalogEntryIdxForBlock(relevantCatalogSec) - 1; // this field is the next available index, so -1 is the count
+    printf("The relevant catalog sec is: 0x%02X and the count is 0x%02X, and the variable is 0x%02X\n", relevantCatalogSec, getNextAvailableCatalogEntryIdxForBlock(relevantCatalogSec) - 1, entryCount);
     int offsetToFirstEntry = 0;
     if (relevantCatalogSec == firstCatalogSector) {
         offsetToFirstEntry = 0x4E; //seems to be the case for the first catalog sector block only
     }
-    if (entryCount != 0x1D) { //TODO we have space. Seems to be unhappy with 0x1E
-        bytes dirBlock = read4Sectors(relevantCatalogSec);
-        for (int e = 0; e < entryCount; e++) { //loop over all entries (0x40 long each, so up to 32 per catalog block)
-            const int entryOffset = offsetToFirstEntry + (e * 0x40);
-            const int cmp = ci_strncmp(name, nameLength, (char *) dirBlock + entryOffset + 3, 32);
-            if (cmp == 0) {
-                return; //illegal to have matching names
-            }
-            if (cmp < 0) {
-                const int catalogEntryOffset = DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
-                //shift
-                for (int rest = e; rest < entryCount; rest++) {
-                    const int originalOffsetOfEntryWithinBlock = offsetToFirstEntry + (rest * 0x40);
-                    const int destinationOffsetOfEntryWithinBlock = originalOffsetOfEntryWithinBlock + 0x40;
-                    for (int eIdx = 0; eIdx < 64; eIdx++) { //length of catalog record
-                        const int off = originalOffsetOfEntryWithinBlock + eIdx;
-                        getImage()[DATA_OFFSET + (SECTOR_SIZE * relevantCatalogSec) + destinationOffsetOfEntryWithinBlock + eIdx] = dirBlock[off];
-                    }
-                }
+    bytes dirBlock = read4Sectors(relevantCatalogSec);
+    int entryToMove = getEntryToMove(dirBlock, offsetToFirstEntry, entryCount, name, nameLength);
 
-                claimNewCatalogEntrySpace(relevantCatalogSec, entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
-                printf("Found space for a new catalog entry (shifting) at offset 0x%X\n", catalogEntryOffset);
-                free(dirBlock);
-                return;
+    if (entryCount < 0x1D) { // if there's space to add the new entry to this block
+        if (entryToMove != -1) { // if we fit in the middle
+            const int entryOffset = offsetToFirstEntry + (entryToMove * 0x40);
+            const int catalogEntryOffset = DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
+            printf("Found space for a new catalog entry (shifting) at offset 0x%X\n", catalogEntryOffset);
+            //shift
+            for (int rest = entryToMove; rest < entryCount; rest++) {
+                const int originalOffsetOfEntryWithinBlock = offsetToFirstEntry + (rest * 0x40);
+                const int destinationOffsetOfEntryWithinBlock = originalOffsetOfEntryWithinBlock + 0x40;
+                for (int eIdx = 0; eIdx < 64; eIdx++) { //length of catalog record
+                    const int off = originalOffsetOfEntryWithinBlock + eIdx;
+                    getImage()[DATA_OFFSET + (SECTOR_SIZE * relevantCatalogSec) + destinationOffsetOfEntryWithinBlock + eIdx] = dirBlock[off];
+                }
             }
+
+            claimNewCatalogEntrySpace(relevantCatalogSec, entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
+            free(dirBlock);
+            return;
         }
-        //we have space at the end
+        //if we have space at the end
+        printf("We fit at the end.\n");
         const int entryOffset = offsetToFirstEntry + (0x40 * entryCount);
         printf("Found space for a new catalog entry (appending) at offset 0x%X\n", entryOffset);
         claimNewCatalogEntrySpace(relevantCatalogSec, entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
         free(dirBlock);
     } else {
         //no space found, so let's make some
-        printf("No space found for a new entry. Creating some...\n");
+        printf("No space found for a new entry (entryCount = 0x%02X). Creating some...\n", entryCount);
         const int nextFreeBlock = claimNextFreeCatalogBlock();
         printf("Space to create new catalog block claimed at sector = %d\n", nextFreeBlock);
-
+        printf("Entry index to move from old block is: 0x%02X\n", entryToMove);
+        //if we're placed into the middle of a sector that's full, move the entries after us to the new one...
+        if (entryToMove == entryCount) {
+            entryToMove = entryCount / 2; //...but if we're placed at the *end* of a block that's full, move half the entries, arbitrarily
+        }
         int movedEntries = 0;
-        for (int e = (int) entryCount - 1; e < entryCount; e++) {
+        for (int e = entryToMove; e < entryCount; e++) { //todo move all entries after us
             const int entryOffsetInSource = offsetToFirstEntry + (e * 0x40);
             const int entryOffsetInDestination = (movedEntries * 0x40);
             //printf("movedEntries = %d. ENTRY OFFSET IN SOURCE = %d, in dest = %d\n", movedEntries, entryOffsetInSource, entryOffsetInDestination);
@@ -720,6 +735,9 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
         // fix valid counts
         writeSector(relevantCatalogSec + 3, SECTOR_SIZE - 11, getNextAvailableCatalogEntryIdxForBlock(relevantCatalogSec) - movedEntries);
         writeSector(nextFreeBlock + 3, SECTOR_SIZE - 11, movedEntries + 1);
+        printf("Moved entries = 0x%02X\n", movedEntries);
+        assert(movedEntries < 0x10); //TODO for now
+        printf("WRITING 0x%02X\n", movedEntries + 1);
 
         bytes srcSec = readSector(relevantCatalogSec + 3);
         uint32_t forward = readLong(readSector(relevantCatalogSec + 3), SECTOR_SIZE - 6);
@@ -930,8 +948,6 @@ int main(int argc, char *argv[]) {
     writeFile("fastline.text", "libqd/fastline.text", false, true);
     writeFile("fixmath.text", "libqd/fixmath.text", false, true);
     writeFile("grafasm.text", "libqd/grafasm.text", false, true);
-    //writeFile("graftypes.text", "libqd/graftypes.text", false, true);
-    /*
     writeFile("lcursor.text", "libqd/lcursor.text", false, true);
     writeFile("line2.text", "libqd/line2.text", false, true);
     writeFile("lines.text", "libqd/lines.text", false, true);
@@ -952,7 +968,7 @@ int main(int argc, char *argv[]) {
     writeFile("stretch.text", "libqd/stretch.text", false, true);
     writeFile("text.text", "libqd/text.text", false, true);
     writeFile("util.text", "libqd/util.text", false, true);
-    */
+
 
 
 
