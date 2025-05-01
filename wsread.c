@@ -45,7 +45,7 @@ uint32_t readLong(const bytes data, const int offset) {
 }
 
 void readFile() {
-    FILE *fileptr = fopen("WS_MASTER.dc42", "rb");
+    FILE *fileptr = fopen("WS_new.dc42", "rb");
     image = (bytes) malloc(FILE_LENGTH * sizeof(uint8_t));
     fread(image, FILE_LENGTH, 1, fileptr);
     fclose(fileptr);
@@ -114,15 +114,20 @@ void dumpFiles() {
     for (int i = sFileSec; i < (sFileSec + sfileBlockCount); i++) {
         bytes data = readSector(i);
         for (int sfileIdx = 0; sfileIdx < slist_packing; sfileIdx++) {
-            if (idx < 10) {
+            if (idx < 5) {
                 idx++;
                 continue;
             }
             int srec = sfileIdx * 14; //length of srecord
             uint32_t fileAddr = readLong(data, srec + 4);
+            int hintSec = readLong(data, srec) + MDDFSec;
+            printf("idx = 0x%02X (offset in sec = 0x%02X), hintSec = 0x%02X, ", idx, srec, hintSec);
+            if (fileAddr == 0x00000000) {
+                printf("\n");
+            }
             if (fileAddr != 0x00000000) { //real file
-                int hintSec = readLong(data, srec) + MDDFSec;
-                printf("hintSec = 0x%02X\n", hintSec);
+                //int hintSec = readLong(data, srec) + MDDFSec;
+                printf("idx = 0x%02X (offset in sec = 0x%02X), hintSec = 0x%02X, ", idx, srec, hintSec);
                 bytes hSec = readSector(hintSec);
                 int nameLength = hSec[0];
                 char *name = (char *) malloc((nameLength * sizeof(char)) + 1);
@@ -134,30 +139,39 @@ void dumpFiles() {
                     }
                     printf("%c", name[n]);
                 }
-                printf("\n");
+                printf(", ");
                 name[nameLength] = '\0';
 
                 char fullpath[256];
                 fullpath[0] = '\0';
                 strcat(fullpath, "extracted/");
                 strcat(fullpath, name);
-                printf("Fullpath = %s\n", fullpath);
+                printf(" Fullpath = %s\n", fullpath);
 
                 FILE *output = fopen(fullpath, "w");
 
                 int nextSec = readLong(data, srec + 4) + MDDFSec;
                 while (true) {
-                    printf("- nextSec = 0x%02X\n", nextSec);
+                    //printf("- nextSec = 0x%02X\n", nextSec);
                     bytes dataSec = readSector(nextSec);
-                    for (int b = 0; b < SECTOR_SIZE; b++) {
+                    int whereZerosBegin = SECTOR_SIZE;
+                    /*
+                    for (int b = SECTOR_SIZE - 1; b > 0; b--) {
+                        if (dataSec[b] != 0x00) {
+                            break;
+                        }
+                        whereZerosBegin--;
+                    }
+                    */
+                    for (int b = 0; b < whereZerosBegin; b++) {
                         fprintf(output, "%c", dataSec[b]);
                     }
                     free(dataSec);
                     bytes dataTags = readTag(nextSec);
                     for (int x = 0; x < TAG_SIZE; x++) {
-                        printf("%02X", dataTags[x]);
+                        //printf("%02X", dataTags[x]);
                     }
-                    printf("\n");
+                    //printf("\n");
                     nextSec = (int) ((dataTags[0xE] << 16) | (dataTags[0xF] << 8) | dataTags[0x10]);
                     if ((nextSec & 0xFFFFFF) == 0xFFFFFF) {
                         free(dataTags);
