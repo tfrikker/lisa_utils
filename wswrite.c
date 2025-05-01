@@ -5,6 +5,7 @@
 #include <ctype.h>
 #include <assert.h>
 #include <math.h>
+#include <string.h>
 
 #define bytes uint8_t*
 
@@ -48,7 +49,7 @@ uint32_t readLong(const bytes data, const int offset) {
 
 void readFile() {
     FILE *fileptr = fopen("WS_MASTER.dc42", "rb");
-    image = (bytes) malloc(FILE_LENGTH * sizeof(uint8_t));
+    image = (bytes) malloc(FILE_LENGTH);
     fread(image, FILE_LENGTH, 1, fileptr);
     fclose(fileptr);
     initialized = true;
@@ -366,7 +367,7 @@ uint16_t claimNextFreeSFileIndex(const int startSector, const int fileSize, cons
     const int indexWithinSectorToWrite = (emptyFile - ((sFileSectorToWrite - sFileSec) * slist_packing)) * 14; //length of srecord
     for (int s = whereToStart; s < SECTORS_IN_DISK; s++) {
         if (isFreeSector(s)) {
-            printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X, fileAddr=0x%08X, fileSize=0x%08X\n", emptyFile, s, startSector, fileSize);
+            //printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X, fileAddr=0x%08X, fileSize=0x%08X\n", emptyFile, s, startSector, fileSize);
             //TODO responsibleSector could overflow to the next one if we're unlucky. For now, don't worry about it.
             writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite, s - MDDFSec); //location of our hint sector
             writeSectorLong(sFileSectorToWrite, indexWithinSectorToWrite + 4, startSector - MDDFSec); // fileAddr
@@ -476,7 +477,11 @@ int claimNextFreeCatalogBlock() {
             writeSector(i, 1, 0x00);
             writeSector(i, 2, 0x00);
 
-            writeSector(i, SECTOR_SIZE - 11, 0x00); //0 valid entries here. TODO test this
+            writeSector(i, SECTOR_SIZE - 11, 0x00); //0 valid entries here.
+
+            for (int j = 0; j < 31; j++) { //let's try 31
+                writeSectorInt(i+3, SECTOR_SIZE - 14 - (j * 2), j * 64); // set up the special index entries (not sure of the actual name)
+            }
 
             fixFreeBitmap(i);
             fixFreeBitmap(i + 1);
@@ -577,7 +582,7 @@ void writeCatalogEntry(const int offset, const int nextFreeSFileIndex, const int
     incrementMDDFFileCount();
 }
 
-uint8_t getCatalogEntryCountForBlock(const int dirSec) {
+uint8_t getNextAvailableCatalogEntryIdxForBlock(const int dirSec) {
     bytes sec = readSector(dirSec + 3);
     const uint8_t count = sec[SECTOR_SIZE - 11];
     free(sec);
@@ -585,7 +590,7 @@ uint8_t getCatalogEntryCountForBlock(const int dirSec) {
 }
 
 void claimNewCatalogEntrySpace(const int dirSec, const int entryOffset, const int sfileid, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
-    writeSector(dirSec + 3, SECTOR_SIZE - 11, getCatalogEntryCountForBlock(dirSec) + 1); //claim another valid entry in this sector
+    writeSector(dirSec + 3, SECTOR_SIZE - 11, getNextAvailableCatalogEntryIdxForBlock(dirSec) + 1); //claim another valid entry in this sector
     writeCatalogEntry(DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
 }
 
@@ -611,7 +616,7 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
             offsetToFirstEntry = 0x4E; //seems to be the case for the first catalog sector block only
         }
 
-        const uint8_t validEntryCount = getCatalogEntryCountForBlock(dirSec) - 1;
+        const uint8_t validEntryCount = getNextAvailableCatalogEntryIdxForBlock(dirSec) - 1;
         const int firstEntryOffset = offsetToFirstEntry;
         const int lastEntryOffset = offsetToFirstEntry + (validEntryCount * 0x40);
 
@@ -623,7 +628,7 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
             if (closestDirName != NULL) {
                 free(closestDirName);
             }
-            printf("Contained in a block!\n");
+            //printf("Contained in a block!\n");
             return dirSec; // this block contains us
         }
 
@@ -638,8 +643,6 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
                 // compare the endings to see who's closer. Keep a running count
                 const int cmpCloser = ci_strncmp(closestDirName, 32, (char *) dirBlock + lastEntryOffset + 3, 32);
                 if (cmpCloser < 0) {
-                    free(closestDirName);
-                    closestDirName = (char *) malloc(32 * sizeof(char));
                     for (int i = 0; i < 32; i++) {
                         closestDirName[i] = (char) dirBlock[lastEntryOffset + 3 + i];
                     }
@@ -660,13 +663,13 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
 
 void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
     const int relevantCatalogSec = findRelevantCatalogSector(nameLength, name);
-    const uint8_t entryCount = getCatalogEntryCountForBlock(relevantCatalogSec) - 1;
-    if (entryCount != 0x1E) { //we have space
-        const int firstCatalogSector = (int) readMDDFLong(0x12E);
-        int offsetToFirstEntry = 0;
-        if (relevantCatalogSec == firstCatalogSector) {
-            offsetToFirstEntry = 0x4E; //seems to be the case for the first catalog sector block only
-        }
+    const uint8_t entryCount = getNextAvailableCatalogEntryIdxForBlock(relevantCatalogSec) - 1; // this field is the next available index, so -1 is the count
+    const int firstCatalogSector = (int) readMDDFLong(0x12E);
+    int offsetToFirstEntry = 0;
+    if (relevantCatalogSec == firstCatalogSector) {
+        offsetToFirstEntry = 0x4E; //seems to be the case for the first catalog sector block only
+    }
+    if (entryCount != 0x1D) { //TODO we have space. Seems to be unhappy with 0x1E
         bytes dirBlock = read4Sectors(relevantCatalogSec);
         for (int e = 0; e < entryCount; e++) { //loop over all entries (0x40 long each, so up to 32 per catalog block)
             const int entryOffset = offsetToFirstEntry + (e * 0x40);
@@ -698,18 +701,40 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
         claimNewCatalogEntrySpace(relevantCatalogSec, entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
         free(dirBlock);
     } else {
-        //TODO split the block in half, then re-call this function
-        printf("Split time! ________ TODO NOT YET IMPLEMENTED __________\n");
-        assert(false);
-        /*
         //no space found, so let's make some
         printf("No space found for a new entry. Creating some...\n");
         const int nextFreeBlock = claimNextFreeCatalogBlock();
         printf("Space to create new catalog block claimed at sector = %d\n", nextFreeBlock);
-        claimNewCatalogEntrySpace(nextFreeBlock, 0, sfileid, fileSize, sectorCount, nameLength, name);
-        // move half of this sector to that sector and correct lengths on both
+
+        int movedEntries = 0;
+        for (int e = (int) entryCount - 1; e < entryCount; e++) {
+            const int entryOffsetInSource = offsetToFirstEntry + (e * 0x40);
+            const int entryOffsetInDestination = (movedEntries * 0x40);
+            //printf("movedEntries = %d. ENTRY OFFSET IN SOURCE = %d, in dest = %d\n", movedEntries, entryOffsetInSource, entryOffsetInDestination);
+            for (int j = 0; j < 64; j++) {
+                getImage()[DATA_OFFSET + (nextFreeBlock * SECTOR_SIZE) + entryOffsetInDestination + j] = getImage()[DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffsetInSource + j];
+            }
+            movedEntries++;
+        }
+
+        // fix valid counts
+        writeSector(relevantCatalogSec + 3, SECTOR_SIZE - 11, getNextAvailableCatalogEntryIdxForBlock(relevantCatalogSec) - movedEntries);
+        writeSector(nextFreeBlock + 3, SECTOR_SIZE - 11, movedEntries + 1);
+
+        bytes srcSec = readSector(relevantCatalogSec + 3);
+        uint32_t forward = readLong(readSector(relevantCatalogSec + 3), SECTOR_SIZE - 6);
+        free(srcSec);
+
+        //fix linked list of blocks.
+        //We just moved the second half of a block, so:
+        //original: (back, forward)
+        //original: (back, new)          new: (original, forward)
+        writeSectorLong(relevantCatalogSec + 3, SECTOR_SIZE - 6, (uint32_t) (nextFreeBlock - MDDFSec));
+        writeSectorLong(nextFreeBlock + 3, SECTOR_SIZE - 10, (uint32_t) (relevantCatalogSec - MDDFSec));
+        writeSectorLong(nextFreeBlock + 3, SECTOR_SIZE - 6, (uint32_t) forward);
+
+        // recursively re-call this because we have more space now
         claimNewCatalogEntry(sfileid, fileSize, sectorCount, nameLength, name);
-         */
     }
 }
 
@@ -766,35 +791,41 @@ int findStartingSector(const int contiguousSectors) {
     return -1; // not found
 }
 
-void writeFile(const int nameLength, const char *name, bool isPascal, bool isText) {
-    printf("___________ Writing file: ");
+void writeFile(const char *srcFileName, const char *name, bool isPascal, bool isText) {
+    const int nameLength = strlen(name);
+    printf("_________________ Writing file: ");
     for (int i = 0; i < nameLength; i++) {
         printf("%c", name[i]);
     }
-    printf(" __________\n");
-    FILE *fileptr = fopen(name, "rb"); // Open the file in binary mode
+    printf(" ________________\n");
+    char fullpath[256];
+    fullpath[0] = '\0';
+    strcat(fullpath, "toinsert/");
+    strcat(fullpath, srcFileName);
+    FILE *fileptr = fopen(fullpath, "rb"); // Open the file in binary mode
     fseek(fileptr, 0, SEEK_END);
     const int rawFileSize = (int) ftell(fileptr);
     fseek(fileptr, 0, SEEK_SET);
-    bytes filedata = (bytes) malloc(rawFileSize * sizeof(uint8_t)); // Enough memory for the file
+    bytes filedata = malloc(rawFileSize); // Enough memory for the file
     fread(filedata, rawFileSize, 1, fileptr); // Read in the entire file
     fclose(fileptr); // Close the file
 
     const int BLOCK_SIZE = SECTOR_SIZE * 2;
 
     // write the data to a buffer
-    bytes dataBuf = (bytes) malloc(rawFileSize * 2 * sizeof(uint8_t)); // Enough memory for the file with some leeway
+    bytes dataBuf = malloc(rawFileSize * 4); // Enough memory for the file with some leeway
     int bytesWritten = 0;
     if (isText) {
         for (int i = 0; i < BLOCK_SIZE; i++) { //1KB of header on text files
             dataBuf[bytesWritten++] = 0x00;
         }
     }
-    printf("    - wrote header. bytesWritten=0x%02X\n", bytesWritten);
+    //printf("    - wrote header. bytesWritten=0x%02X\n", bytesWritten);
     bool justWroteSemi = false;
     bool justWroteNewline = false;
     for (int i = 0; i < rawFileSize; i++) { // for every byte of the input data
         uint8_t b = filedata[i];
+        //printf("%c", b);
         if (b == 0x0A) {
             b = 0x0D; //replace Mac style line breaks with Lisa style
         }
@@ -802,9 +833,9 @@ void writeFile(const int nameLength, const char *name, bool isPascal, bool isTex
             printf("ERROR! There was no padding added here.\n");
             assert(false);
         }
-        if (bytesWritten % BLOCK_SIZE > (BLOCK_SIZE - 0x120) && justWroteNewline) {
+        if (bytesWritten % BLOCK_SIZE > (BLOCK_SIZE - 0x190) && justWroteNewline) {
             const int padding = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
-            printf("        - bytesWritten = 0x%02X, adding 0x%02X bytes of padding\n", bytesWritten, padding);
+            //printf("        - bytesWritten = 0x%02X, adding 0x%02X bytes of padding\n", bytesWritten, padding);
             for (int j = 0; j < padding; j++) {
                 //write the footer to each sector
                 dataBuf[bytesWritten++] = 0x00;
@@ -813,7 +844,7 @@ void writeFile(const int nameLength, const char *name, bool isPascal, bool isTex
             justWroteNewline = false;
         } else {
             dataBuf[bytesWritten++] = b;
-            if (b == 0x3B || b == 0x7D) { //; or }
+            if (b == 0x3B || b == 0x7D || b == ')') { //; or }
                 justWroteSemi = true;
                 justWroteNewline = false;
             } else if (b == 0x0D) {
@@ -829,15 +860,15 @@ void writeFile(const int nameLength, const char *name, bool isPascal, bool isTex
             }
         }
     }
-    printf("    - wrote data. bytesWritten=0x%2X\n", bytesWritten);
+    //printf("    - wrote data. bytesWritten=0x%2X\n", bytesWritten);
     const int remaining = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
-    printf("    - (remaining = 0x%2X)\n", remaining);
+    //printf("    - (remaining = 0x%2X)\n", remaining);
     for (int i = 0; i < remaining; i++) {
         dataBuf[bytesWritten++] = 0x00;
     }
-    printf("    - wrote end. bytesWritten=0x%2X\n", bytesWritten);
+    //printf("    - wrote end. bytesWritten=0x%2X\n", bytesWritten);
 
-    printf("Final buffer length = 0x%2X\n", bytesWritten);
+    //printf("Final buffer length = 0x%2X\n", bytesWritten);
 
     // do the work
     const int sectorCount = getSectorCount(bytesWritten);
@@ -857,7 +888,7 @@ void writeFile(const int nameLength, const char *name, bool isPascal, bool isTex
     writeFileTagBytes(startSector, sectorCount, sfileid);
     free(dataBuf);
     free(filedata);
-    printf("______________________________________________\n");
+    printf("\n");
 }
 
 int main(int argc, char *argv[]) {
@@ -870,8 +901,8 @@ int main(int argc, char *argv[]) {
 
     //printSFile();
 
-    /*
-    for (int i = 0; i < 0; i++) {
+
+    for (int i = 0; i < 200; i++) {
         const uint8_t calculatedChecksum = calculateChecksum(i);
         printf("sec %d (0x%02X) (offset=0x%02X) with chksum 0x%02X:", i, i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
         bytes tag = readTag(i);
@@ -886,14 +917,46 @@ int main(int argc, char *argv[]) {
         }
         printf("\n");
     }
-    */
+
 
     // get the file we want to write
-    writeFile(11, "INSANE.TEXT", true, true);
-    //writeFile(11, "stunts.text", true);
-    //writeFile(7, "g5.text", false);
-    //writeFile(7, "g6.text", false);
-    //writeFile(7, "g2.text");
+    writeFile("angles.text", "libqd/angles.text", false, true);
+    writeFile("arcs.text", "libqd/arcs.text", false, true);
+    writeFile("bitblt.text", "libqd/bitblt.text", false, true);
+    writeFile("bitmaps.text", "libqd/bitmaps.text", false, true);
+    writeFile("drawarc.text", "libqd/drawarc.text", false, true);
+    writeFile("drawline.text", "libqd/drawline.text", false, true);
+    writeFile("drawtext.text", "libqd/drawtext.text", false, true);
+    writeFile("fastline.text", "libqd/fastline.text", false, true);
+    writeFile("fixmath.text", "libqd/fixmath.text", false, true);
+    writeFile("grafasm.text", "libqd/grafasm.text", false, true);
+    //writeFile("graftypes.text", "libqd/graftypes.text", false, true);
+    /*
+    writeFile("lcursor.text", "libqd/lcursor.text", false, true);
+    writeFile("line2.text", "libqd/line2.text", false, true);
+    writeFile("lines.text", "libqd/lines.text", false, true);
+    writeFile("ovals.text", "libqd/ovals.text", false, true);
+    writeFile("packrgn.text", "libqd/packrgn.text", false, true);
+    writeFile("pictures.text", "libqd/pictures.text", false, true);
+    writeFile("polygons.text", "libqd/polygons.text", false, true);
+    writeFile("putline.text", "libqd/putline.text", false, true);
+    writeFile("putoval.text", "libqd/putoval.text", false, true);
+    writeFile("putrgn.text", "libqd/putrgn.text", false, true);
+    writeFile("rects.text", "libqd/rects.text", false, true);
+    writeFile("regions.text", "libqd/regions.text", false, true);
+    writeFile("rgnblt.text", "libqd/rgnblt.text", false, true);
+    writeFile("rgnop.text", "libqd/rgnop.text", false, true);
+    writeFile("rrects.text", "libqd/rrects.text", false, true);
+    writeFile("seekrgn.text", "libqd/seekrgn.text", false, true);
+    writeFile("sortpoints.text", "libqd/sortpoints.text", false, true);
+    writeFile("stretch.text", "libqd/stretch.text", false, true);
+    writeFile("text.text", "libqd/text.text", false, true);
+    writeFile("util.text", "libqd/util.text", false, true);
+    */
+
+
+
+
 
     // cleanup and close
 
