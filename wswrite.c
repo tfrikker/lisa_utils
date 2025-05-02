@@ -18,6 +18,31 @@ const int TAG_SIZE = 0x14; // for ProFile disks
 // sectors
 const int CATALOG_SEC_OFFSET = 61; // Which sector the catalog listing starts on
 const int SECTORS_IN_DISK = 0x2600; // for 5MB ProFile
+// MDDF offsets
+const uint8_t MDDF_BITMAP_ADDR = 0x88;
+const uint8_t MDDF_SLIST_ADDR = 0x94;
+const uint8_t MDDF_SLIST_PACKING = 0x98;
+const uint8_t MDDF_SLIST_BLOCK_COUNT = 0x9A;
+const uint8_t MDDF_FIRST_FILE = 0x9C;
+const uint8_t MDDF_EMPTY_FILE = 0x9E;
+const uint8_t MDDF_FILECOUNT = 0xB0;
+const uint8_t MDDF_FREECOUNT = 0xBA;
+const uint16_t MDDF_ROOT_PAGE = 0x12E;
+// s-file
+const int SFILE_RECORD_LENGTH = 14;
+// catalog
+const int CATALOG_RECORD_LENGTH = 64;
+const int CATALOG_NONLEAF_RECORD_LENGTH = 0x28;
+// file IDs
+const uint16_t FREE_FILE_ID = 0x0000;
+const uint16_t MDDF_FILE_ID = 0x0001;
+const uint16_t BITMAP_FILE_ID = 0x0002;
+const uint16_t SFILE_FILE_ID = 0x0003;
+const uint16_t CATALOG_FILE_ID = 0x0004;
+const uint16_t DELETED_FILE_ID = 0x7FFF;
+const uint16_t BOOT_SEC_FILE_ID = 0xAAAA;
+const uint16_t OS_LOADER_FILE_ID = 0xBBBB;
+const uint16_t INITIAL_HINT_FILE_ID = 0xFFFB; //the file ID for a hint; seems to be where these start
 
 // ---------- Variables ----------
 
@@ -26,7 +51,7 @@ int MDDFSec;
 int bitmapSec;
 int sFileSec;
 int sfileBlockCount;
-uint16_t lastUsedHintIndex = 0xFFFB; //seems to be where these start
+uint16_t lastUsedHintIndex = INITIAL_HINT_FILE_ID;
 bool initialized = false;
 
 // ---------- Functions ----------
@@ -150,9 +175,9 @@ void zeroSector(const int sector) {
 
 bool isCatalogSector(const int sec) {
     bytes tag = readTag(sec);
-    const bool isCatalogSector = (tag[4] == 0x00 && tag[5] == 0x04);
+    const uint16_t fileId = readInt(tag, 4);
     free(tag);
-    return isCatalogSector;
+    return fileId == CATALOG_FILE_ID;
 }
 
 void findMDDFSec() {
@@ -160,7 +185,7 @@ void findMDDFSec() {
         bytes tag = readTag(i);
         const uint16_t type = readInt(tag, 4);
         free(tag);
-        if (type == 0x0001) {
+        if (type == MDDF_FILE_ID) {
             MDDFSec = i;
             printf("mddfsec: 0x%02X\n", MDDFSec);
             return;
@@ -169,13 +194,13 @@ void findMDDFSec() {
 }
 
 void findBitmapSec() {
-    bitmapSec = (int) readMDDFLong(0x88) + MDDFSec;
+    bitmapSec = (int) readMDDFLong(MDDF_BITMAP_ADDR) + MDDFSec;
 }
 
 void findSFileSec() {
-    sFileSec = (int) readMDDFLong(0x94) + MDDFSec;
-    sfileBlockCount = (int) readMDDFInt(0x9A);
-    printf("emptyfile: 0x%02X\n", readMDDFInt(0x9E));
+    sFileSec = (int) readMDDFLong(MDDF_SLIST_ADDR) + MDDFSec;
+    sfileBlockCount = (int) readMDDFInt(MDDF_SLIST_BLOCK_COUNT);
+    printf("emptyfile: 0x%02X\n", readMDDFInt(MDDF_EMPTY_FILE));
 }
 
 void printSectorType(const int sector) {
@@ -183,21 +208,21 @@ void printSectorType(const int sector) {
     const uint16_t type = readInt(tag, 4);
     free(tag);
     // thanks, Ray
-    if (type == 0xAAAA) {
+    if (type == BOOT_SEC_FILE_ID) {
         printf("(boot sector)");
-    } else if (type == 0xBBBB) {
+    } else if (type == OS_LOADER_FILE_ID) {
         printf("(OS loader)");
-    } else if (type == 0x0000) {
+    } else if (type == FREE_FILE_ID) {
         printf(""); // free
-    } else if (type == 0x0001) {
+    } else if (type == MDDF_FILE_ID) {
         printf("(MDDF)");
-    } else if (type == 0x0002) {
+    } else if (type == BITMAP_FILE_ID) {
         printf("(free bitmap)");
-    } else if (type == 0x0003) {
+    } else if (type == SFILE_FILE_ID) {
         printf("(s-file)");
-    } else if (type == 0x0004) {
+    } else if (type == CATALOG_FILE_ID) {
         printf("(catalog)");
-    } else if (type == 0x7FFF) {
+    } else if (type == DELETED_FILE_ID) {
         printf("<deleted>");
     } else {
         printf("file 0x%02X", type);
@@ -219,9 +244,9 @@ bool isFreeSector(const int sector) {
 }
 
 void decrementMDDFFreeCount() {
-    uint32_t freeCount = readMDDFLong(0xBA);
+    uint32_t freeCount = readMDDFLong(MDDF_FREECOUNT);
     freeCount--;
-    writeSectorLong(MDDFSec, 0xBA, freeCount);
+    writeSectorLong(MDDFSec, MDDF_FREECOUNT, freeCount);
 }
 
 void fixFreeBitmap(const int sec) {
@@ -321,13 +346,13 @@ int getSectorCount(const int fileSize) {
 }
 
 int findNextFreeSFileIndex() {
-    const uint16_t slist_packing = readMDDFInt(0x98); //number of s_entries per block in slist
-    int lastIdx = readMDDFInt(0x9C); //the minimum sfile we can use per the MDDF
+    const uint16_t slist_packing = readMDDFInt(MDDF_SLIST_PACKING); //number of s_entries per block in slist
+    int lastIdx = readMDDFInt(MDDF_FIRST_FILE); //the minimum sfile we can use per the MDDF
     uint16_t idx = 0;
     for (int i = sFileSec; i < (sFileSec + sfileBlockCount); i++) {
         bytes data = readSector(i);
         for (int sfileIdx = 0; sfileIdx < slist_packing; sfileIdx++) {
-            int srec = sfileIdx * 14; //length of srecord
+            int srec = sfileIdx * SFILE_RECORD_LENGTH;
             const uint32_t hintAddr = readLong(data, srec);
             /*
             printf("IDX = 0x%02X: ", idx);
@@ -355,16 +380,16 @@ int findNextFreeSFileIndex() {
 }
 
 //returns the index of the s-file (the file ID)
-uint16_t claimNextFreeSFileIndex(const int startSector, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
-    const int emptyFile = readMDDFInt(0x9E);
+uint16_t claimNextFreeSFileIndex(const int startSector, const int sectorCount, const int nameLength, const char *name) {
+    const int emptyFile = readMDDFInt(MDDF_EMPTY_FILE);
 
     const int whereToStart = sFileSec + sfileBlockCount; // TODO start after this, roughly. Might need to be more stringent
 
-    const uint16_t slist_packing = readMDDFInt(0x98); //number of s_entries per block in slist
+    const uint16_t slist_packing = readMDDFInt(MDDF_SLIST_PACKING); //number of s_entries per block in slist
 
     //claim it and return it
     const int sFileSectorToWrite = (emptyFile / slist_packing) + sFileSec;
-    const int indexWithinSectorToWrite = (emptyFile - ((sFileSectorToWrite - sFileSec) * slist_packing)) * 14; //length of srecord
+    const int indexWithinSectorToWrite = (emptyFile - ((sFileSectorToWrite - sFileSec) * slist_packing)) * SFILE_RECORD_LENGTH; //length of srecord
     for (int s = whereToStart; s < SECTORS_IN_DISK; s++) {
         if (isFreeSector(s)) {
             //printf("Claiming new s-file at index=0x%04X, hint sector=0x%08X, fileAddr=0x%08X, fileSize=0x%08X\n", emptyFile, s, startSector, fileSize);
@@ -377,7 +402,7 @@ uint16_t claimNextFreeSFileIndex(const int startSector, const int fileSize, cons
             claimNextFreeHintSector(s, startSector, sectorCount, nameLength, name);
 
             int newEmptyFile = findNextFreeSFileIndex();
-            writeSectorInt(MDDFSec, 0x9E, newEmptyFile);
+            writeSectorInt(MDDFSec, MDDF_EMPTY_FILE, newEmptyFile);
 
             return emptyFile;
         }
@@ -387,12 +412,12 @@ uint16_t claimNextFreeSFileIndex(const int startSector, const int fileSize, cons
 }
 
 void printSFile() {
-    const uint16_t slist_packing = readMDDFInt(0x98); //number of s_entries per block in slist
+    const uint16_t slist_packing = readMDDFInt(MDDF_SLIST_PACKING); //number of s_entries per block in slist
     uint16_t idx = 0;
     for (int i = sFileSec; i < (sFileSec + sfileBlockCount); i++) {
         bytes data = readSector(i);
         for (int sfileIdx = 0; sfileIdx < slist_packing; sfileIdx++) {
-            int srec = sfileIdx * 14; //length of srecord
+            int srec = sfileIdx * SFILE_RECORD_LENGTH; //length of srecord
             const uint32_t hintAddr = readLong(data, srec);
             printf("IDX = 0x%02X: ", idx);
             printf("hintAddr = 0x%08X, ", hintAddr);
@@ -480,7 +505,7 @@ int claimNextFreeCatalogBlock() {
             writeSector(i, SECTOR_SIZE - 11, 0x00); //0 valid entries here.
 
             for (int j = 0; j < 31; j++) { //let's try 31
-                writeSectorInt(i+3, SECTOR_SIZE - 14 - (j * 2), j * 64); // set up the special index entries (not sure of the actual name)
+                writeSectorInt(i+3, SECTOR_SIZE - 14 - (j * 2), j * CATALOG_RECORD_LENGTH); // set up the special index entries (not sure of the actual name)
             }
 
             writeSectorLong(i + 3, SECTOR_SIZE - 10, 0xFFFFFFFF); //10-9-8-7
@@ -522,9 +547,9 @@ bool ci_a_before_b(const char *a, const int a_len, const char *b, const int b_le
 }
 
 void incrementMDDFFileCount() {
-    uint16_t fileCount = readMDDFInt(0xB0);
+    uint16_t fileCount = readMDDFInt(MDDF_FILECOUNT);
     fileCount++;
-    writeSectorInt(MDDFSec, 0xB0, fileCount);
+    writeSectorInt(MDDFSec, MDDF_FILECOUNT, fileCount);
 }
 
 void writeCatalogEntry(const int offset, const int nextFreeSFileIndex, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
@@ -560,7 +585,7 @@ void writeCatalogEntry(const int offset, const int nextFreeSFileIndex, const int
         0xCE, 0x06, 0x00, 0x00 //fileUnused (lisa says 0xCE060000)
     };
     // write the rest
-    for (int i = 0; i < (64 - 36); i++) {
+    for (int i = 0; i < (CATALOG_RECORD_LENGTH - 36); i++) {
         image[offset + idx] = restOfEntry[i];
         idx++;
     }
@@ -571,14 +596,12 @@ uint8_t getCatalogEntryCountForBlock(const int dirSec) {
     bytes sec = readSector(dirSec + 3);
     const uint8_t count = sec[SECTOR_SIZE - 11];
     free(sec);
-    //printf("GETTING NEXT AVAILABLE FOR SECTOR = 0x%02X: 0x%02X\n", dirSec, count);
     return count;
 }
 
 void claimNewCatalogEntrySpace(const int dirSec, const int entryOffset, const int sfileid, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
     int entry = getCatalogEntryCountForBlock(dirSec) + 1;
     writeSector(dirSec + 3, SECTOR_SIZE - 11, entry); //claim another valid entry in this sector
-    //printf("WRITING 0x%02X\n", entry);
     writeCatalogEntry(DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
 }
 
@@ -606,9 +629,7 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
 
         const uint8_t validEntryCount = getCatalogEntryCountForBlock(dirSec);
         const int firstEntryOffset = offsetToFirstEntry;
-        const int lastEntryOffset = offsetToFirstEntry + ((validEntryCount - 1) * 0x40);
-        //printf("sector = %d, validEntryCount = %d, first = %d, last = %d\n", dirSec, validEntryCount, firstEntryOffset, lastEntryOffset);
-
+        const int lastEntryOffset = offsetToFirstEntry + ((validEntryCount - 1) * CATALOG_RECORD_LENGTH);
 
         const bool nameBeforeFirst = ci_a_before_b(name, nameLength, (char *) dirBlock + firstEntryOffset + 3, 32);
         const bool nameBeforeLast = ci_a_before_b(name, nameLength, (char *) dirBlock + lastEntryOffset + 3, 32);
@@ -627,9 +648,7 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
                 closestDirName = (char *) malloc(32 * sizeof(char));
                 for (int i = 0; i < 32; i++) {
                     closestDirName[i] = (char) dirBlock[lastEntryOffset + 3 + i];
-                    //printf("%c", closestDirName[i]);
                 }
-                //printf("\n");
                 closestDirSec = dirSec;
             } else {
                 // compare the endings to see who's closer. Keep a running count
@@ -637,9 +656,7 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
                 if (lastAfterRunningClosest) {
                     for (int i = 0; i < 32; i++) {
                         closestDirName[i] = (char) dirBlock[lastEntryOffset + 3 + i];
-                        //printf("%c", closestDirName[i]);
                     }
-                    //printf("\n");
                     closestDirSec = dirSec;
                     printf("closestDirSec now = %d\n", closestDirSec);
                 }
@@ -668,7 +685,7 @@ int getEntryToMove(bytes dirBlock, int offsetToFirstEntry, int entryCount, char 
 }
 
 void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int sectorCount, const int nameLength, char *name) {
-    const int firstCatalogSector = (int) readMDDFLong(0x12E);
+    const int firstCatalogSector = (int) readMDDFLong(MDDF_ROOT_PAGE);
     const int relevantCatalogSec = findRelevantCatalogSector(nameLength, name);
     uint8_t entryCount = getCatalogEntryCountForBlock(relevantCatalogSec);
     printf("The relevant catalog sec is: 0x%02X and the count is 0x%02X, and the variable is 0x%02X\n", relevantCatalogSec, getCatalogEntryCountForBlock(relevantCatalogSec), entryCount);
@@ -678,18 +695,18 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
         entryCount--;
     }
     bytes dirBlock = read4Sectors(relevantCatalogSec);
-    int entryToMove = getEntryToMove(dirBlock, offsetToFirstEntry, entryCount, name, nameLength, 0x40, 3);
+    int entryToMove = getEntryToMove(dirBlock, offsetToFirstEntry, entryCount, name, nameLength, CATALOG_RECORD_LENGTH, 3);
 
-    if (entryCount < 0x1D) { // if there's space to add the new entry to this block
+    if (entryCount < 0x1D) { // TODO: should be 1E, if there's space to add the new entry to this block
         if (entryToMove != -1) { // if we fit in the middle
-            const int entryOffset = offsetToFirstEntry + (entryToMove * 0x40);
+            const int entryOffset = offsetToFirstEntry + (entryToMove * CATALOG_RECORD_LENGTH);
             const int catalogEntryOffset = DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
             printf("Found space for a new catalog entry (shifting) at offset 0x%X\n", catalogEntryOffset);
             //shift
             for (int rest = entryToMove; rest < entryCount; rest++) {
-                const int originalOffsetOfEntryWithinBlock = offsetToFirstEntry + (rest * 0x40);
-                const int destinationOffsetOfEntryWithinBlock = originalOffsetOfEntryWithinBlock + 0x40;
-                for (int eIdx = 0; eIdx < 64; eIdx++) { //length of catalog record
+                const int originalOffsetOfEntryWithinBlock = offsetToFirstEntry + (rest * CATALOG_RECORD_LENGTH);
+                const int destinationOffsetOfEntryWithinBlock = originalOffsetOfEntryWithinBlock + CATALOG_RECORD_LENGTH;
+                for (int eIdx = 0; eIdx < CATALOG_RECORD_LENGTH; eIdx++) {
                     const int off = originalOffsetOfEntryWithinBlock + eIdx;
                     getImage()[DATA_OFFSET + (SECTOR_SIZE * relevantCatalogSec) + destinationOffsetOfEntryWithinBlock + eIdx] = dirBlock[off];
                 }
@@ -701,7 +718,7 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
         }
         //if we have space at the end
         printf("We fit at the end.\n");
-        const int entryOffset = offsetToFirstEntry + (0x40 * entryCount);
+        const int entryOffset = offsetToFirstEntry + (CATALOG_RECORD_LENGTH * entryCount);
         printf("Found space for a new catalog entry (appending) at offset 0x%X\n", entryOffset);
         claimNewCatalogEntrySpace(relevantCatalogSec, entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
         free(dirBlock);
@@ -719,22 +736,21 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
         bool first = true;
         char *firstname = malloc(36);
         for (int e = entryToMove; e < entryCount; e++) { //todo move all entries after us
-            const int entryOffsetInSource = offsetToFirstEntry + (e * 0x40);
-            const int entryOffsetInDestination = (movedEntries * 0x40);
+            const int entryOffsetInSource = offsetToFirstEntry + (e * CATALOG_RECORD_LENGTH);
+            const int entryOffsetInDestination = (movedEntries * CATALOG_RECORD_LENGTH);
             if (first) {
                 first = false;
                 for (int i = 0; i < 36; i++) {
                     firstname[i] = getImage()[DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffsetInSource + 3 + i];
                 }
             }
-            //printf("movedEntries = %d. ENTRY OFFSET IN SOURCE = %d, in dest = %d\n", movedEntries, entryOffsetInSource, entryOffsetInDestination);
-            for (int j = 0; j < 64; j++) {
+            for (int j = 0; j < CATALOG_RECORD_LENGTH; j++) {
                 getImage()[DATA_OFFSET + (nextFreeBlock * SECTOR_SIZE) + entryOffsetInDestination + j] = getImage()[DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffsetInSource + j];
             }
             movedEntries++;
         }
 
-        //TODO for the first moved entry, fix the non-leaf
+        // for the first moved entry, fix the non-leaf
         for (int d = 0; d < SECTORS_IN_DISK; d++) {
             bool found = false;
             //in all the possible catalogSectors. They come in 4s, always
@@ -757,13 +773,13 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
             printf("WE FOUND OUR NON-LEAF!");
 
             int nonLeafEntryCount = getImage()[DATA_OFFSET + (SECTOR_SIZE * (d + 3 + 1)) - 11];
-            int nonLeafEntryToMove = getEntryToMove(nonleaf, 0, nonLeafEntryCount, firstname, 32, 0x28, 7);
+            int nonLeafEntryToMove = getEntryToMove(nonleaf, 0, nonLeafEntryCount, firstname, 32, CATALOG_NONLEAF_RECORD_LENGTH, 7);
 
             for (int rest = nonLeafEntryToMove; rest < nonLeafEntryCount; rest++) {
                 printf("Moving entry at index = %d: ", rest);
-                const int originalOffsetOfNonLeafEntryWithinBlock = (rest * 0x28);
-                const int destinationOffsetOfNonLeafEntryWithinBlock = originalOffsetOfNonLeafEntryWithinBlock + 0x28;
-                for (int eIdx = 0; eIdx < 0x28; eIdx++) { //length of nonleaf catalog record
+                const int originalOffsetOfNonLeafEntryWithinBlock = (rest * CATALOG_NONLEAF_RECORD_LENGTH);
+                const int destinationOffsetOfNonLeafEntryWithinBlock = originalOffsetOfNonLeafEntryWithinBlock + CATALOG_NONLEAF_RECORD_LENGTH;
+                for (int eIdx = 0; eIdx < CATALOG_NONLEAF_RECORD_LENGTH; eIdx++) {
                     const int off = originalOffsetOfNonLeafEntryWithinBlock + eIdx;
                     printf("%02X", nonleaf[off]);
                     getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + destinationOffsetOfNonLeafEntryWithinBlock + eIdx] = nonleaf[off];
@@ -771,7 +787,7 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
                 printf("\n");
             }
 
-            int os = nonLeafEntryToMove * 0x28;
+            int os = nonLeafEntryToMove * CATALOG_NONLEAF_RECORD_LENGTH;
             uint32_t newBk = (uint32_t) (nextFreeBlock - MDDFSec);
             getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os] = (newBk >> 24) & 0xFF;
             getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os + 1] = (newBk >> 16) & 0xFF;
@@ -795,12 +811,9 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
         // fix valid counts
         writeSector(relevantCatalogSec + 3, SECTOR_SIZE - 11, getCatalogEntryCountForBlock(relevantCatalogSec) - movedEntries);
         writeSector(nextFreeBlock + 3, SECTOR_SIZE - 11, movedEntries + 1);
-        printf("Moved entries = 0x%02X\n", movedEntries);
-        assert(movedEntries < 0x10); //TODO for now
-        printf("WRITING 0x%02X\n", movedEntries + 1);
 
         bytes srcSec = readSector(relevantCatalogSec + 3);
-        uint32_t forward = readLong(readSector(relevantCatalogSec + 3), SECTOR_SIZE - 6);
+        const uint32_t forward = readLong(readSector(relevantCatalogSec + 3), SECTOR_SIZE - 6);
         free(srcSec);
 
         //fix linked list of blocks.
@@ -921,7 +934,7 @@ void writeFile(const char *srcFileName, char *name, bool isPascal, bool isText) 
             justWroteNewline = false;
         } else {
             dataBuf[bytesWritten++] = b;
-            if (b == 0x3B || b == 0x7D || b == ')') { //; or }
+            if (b == ';' || b == '}' || b == ')') { //; or }
                 justWroteSemi = true;
                 justWroteNewline = false;
             } else if (b == 0x0D) {
@@ -951,7 +964,7 @@ void writeFile(const char *srcFileName, char *name, bool isPascal, bool isText) 
     const int sectorCount = getSectorCount(bytesWritten);
     const int startSector = findStartingSector(sectorCount); // allocate contiguously to be nice about it
 
-    const uint16_t sfileid = claimNextFreeSFileIndex(startSector, bytesWritten, sectorCount, nameLength, name);
+    const uint16_t sfileid = claimNextFreeSFileIndex(startSector, sectorCount, nameLength, name);
 
     claimNewCatalogEntry(sfileid, bytesWritten, sectorCount, nameLength, name);
 
