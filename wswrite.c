@@ -54,6 +54,7 @@ bytes image = NULL;
 int MDDFSec;
 int bitmapSec;
 int sFileSec;
+int nonLeafCatalogSec;
 int sfileBlockCount;
 uint16_t lastUsedHintIndex = INITIAL_HINT_FILE_ID;
 bool initialized = false;
@@ -453,6 +454,25 @@ uint8_t calculateChecksum(const int sector) {
     return checksumByte;
 }
 
+void findNonLeafCatalogSec() {
+    // for the first moved entry, fix the non-leaf
+    nonLeafCatalogSec = -1;
+    for (int d = 0; d < SECTORS_IN_DISK; d++) {
+        //in all the possible catalogSectors. They come in 4s, always
+        if (!isCatalogSector(d)) {
+            continue;
+        }
+        bytes nonleaf = read4Sectors(d);
+        if (nonleaf[0] == 0x24 && nonleaf[1] == 0x00 && nonleaf[2] == 0x00) {
+            free(nonleaf);
+            d += 3;
+            continue; //leaf
+        }
+        nonLeafCatalogSec = d;
+        return;
+    }
+}
+
 // returns the first sector of the 4
 int claimNextFreeCatalogBlock() {
     for (int i = CATALOG_SEC_OFFSET; i < SECTORS_IN_DISK; i += 4) { //let's start looking after where the directories tend to begin
@@ -752,53 +772,36 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
         }
 
         // for the first moved entry, fix the non-leaf
-        for (int d = 0; d < SECTORS_IN_DISK; d++) {
-            bool found = false;
-            //in all the possible catalogSectors. They come in 4s, always
-            if (!isCatalogSector(d)) {
-                continue;
-            }
-            bytes nonleaf = read4Sectors(d);
-            if (nonleaf[0] == 0x24 && nonleaf[1] == 0x00 && nonleaf[2] == 0x00) {
-                free(nonleaf);
-                nonleaf = NULL;
-                d += 3;
-                continue; //leaf
-            }
+        bytes nonleaf = read4Sectors(nonLeafCatalogSec);
+        const int nonLeafEntryCount = getImage()[DATA_OFFSET + (SECTOR_SIZE * (nonLeafCatalogSec + 3 + 1)) - 11];
+        const int nonLeafEntryToMove = getEntryToMove(nonleaf, 0, nonLeafEntryCount, firstname, 32, CATALOG_NONLEAF_RECORD_LENGTH, 7);
 
-            int nonLeafEntryCount = getImage()[DATA_OFFSET + (SECTOR_SIZE * (d + 3 + 1)) - 11];
-            int nonLeafEntryToMove = getEntryToMove(nonleaf, 0, nonLeafEntryCount, firstname, 32, CATALOG_NONLEAF_RECORD_LENGTH, 7);
-
-            for (int rest = nonLeafEntryToMove; rest < nonLeafEntryCount; rest++) {
-                printf("Moving entry at index = %d: ", rest);
-                const int originalOffsetOfNonLeafEntryWithinBlock = (rest * CATALOG_NONLEAF_RECORD_LENGTH);
-                const int destinationOffsetOfNonLeafEntryWithinBlock = originalOffsetOfNonLeafEntryWithinBlock + CATALOG_NONLEAF_RECORD_LENGTH;
-                for (int eIdx = 0; eIdx < CATALOG_NONLEAF_RECORD_LENGTH; eIdx++) {
-                    const int off = originalOffsetOfNonLeafEntryWithinBlock + eIdx;
-                    getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + destinationOffsetOfNonLeafEntryWithinBlock + eIdx] = nonleaf[off];
-                }
+        for (int rest = nonLeafEntryToMove; rest < nonLeafEntryCount; rest++) {
+            printf("Moving entry at index = %d: ", rest);
+            const int originalOffsetOfNonLeafEntryWithinBlock = (rest * CATALOG_NONLEAF_RECORD_LENGTH);
+            const int destinationOffsetOfNonLeafEntryWithinBlock = originalOffsetOfNonLeafEntryWithinBlock + CATALOG_NONLEAF_RECORD_LENGTH;
+            for (int eIdx = 0; eIdx < CATALOG_NONLEAF_RECORD_LENGTH; eIdx++) {
+                const int off = originalOffsetOfNonLeafEntryWithinBlock + eIdx;
+                getImage()[DATA_OFFSET + (SECTOR_SIZE * nonLeafCatalogSec) + destinationOffsetOfNonLeafEntryWithinBlock + eIdx] = nonleaf[off];
             }
-
-            const int os = nonLeafEntryToMove * CATALOG_NONLEAF_RECORD_LENGTH;
-            printf("Writing new nonleaf entry to offset = 0x%02X\n", DATA_OFFSET + (SECTOR_SIZE * d) + os);
-            const uint32_t newBk = (uint32_t) (nextFreeBlock - MDDFSec);
-            getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os] = (newBk >> 24) & 0xFF;
-            getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os + 1] = (newBk >> 16) & 0xFF;
-            getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os + 2] = (newBk >> 8) & 0xFF;
-            getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os + 3] = newBk & 0xFF;
-
-            getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os + 4] = 0x24;
-            getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os + 5] = 0x00;
-            getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os + 6] = 0x00;
-            for (int kk = 0; kk < 32; kk++) {
-                getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os + 7 + kk] = firstname[kk];
-            }
-            getImage()[DATA_OFFSET + (SECTOR_SIZE * (d + 3 + 1)) - 11] = nonLeafEntryCount + 1; //increment entry count
-            free(nonleaf);
-            nonleaf = NULL;
-            found = true;
-            break;
         }
+
+        const int os = nonLeafEntryToMove * CATALOG_NONLEAF_RECORD_LENGTH;
+        printf("Writing new nonleaf entry to offset = 0x%02X\n", DATA_OFFSET + (SECTOR_SIZE * nonLeafCatalogSec) + os);
+        const uint32_t newBk = (uint32_t) (nextFreeBlock - MDDFSec);
+        getImage()[DATA_OFFSET + (SECTOR_SIZE * nonLeafCatalogSec) + os] = (newBk >> 24) & 0xFF;
+        getImage()[DATA_OFFSET + (SECTOR_SIZE * nonLeafCatalogSec) + os + 1] = (newBk >> 16) & 0xFF;
+        getImage()[DATA_OFFSET + (SECTOR_SIZE * nonLeafCatalogSec) + os + 2] = (newBk >> 8) & 0xFF;
+        getImage()[DATA_OFFSET + (SECTOR_SIZE * nonLeafCatalogSec) + os + 3] = newBk & 0xFF;
+
+        getImage()[DATA_OFFSET + (SECTOR_SIZE * nonLeafCatalogSec) + os + 4] = 0x24;
+        getImage()[DATA_OFFSET + (SECTOR_SIZE * nonLeafCatalogSec) + os + 5] = 0x00;
+        getImage()[DATA_OFFSET + (SECTOR_SIZE * nonLeafCatalogSec) + os + 6] = 0x00;
+        for (int kk = 0; kk < 32; kk++) {
+            getImage()[DATA_OFFSET + (SECTOR_SIZE * nonLeafCatalogSec) + os + 7 + kk] = firstname[kk];
+        }
+        getImage()[DATA_OFFSET + (SECTOR_SIZE * (nonLeafCatalogSec + 3 + 1)) - 11] = nonLeafEntryCount + 1; //increment entry count
+        free(nonleaf);
         free(firstname);
 
         // fix valid counts
@@ -973,6 +976,7 @@ int main(int argc, char *argv[]) {
     findMDDFSec();
     findBitmapSec();
     findSFileSec();
+    findNonLeafCatalogSec();
 
     /*
     for (int i = 0; i < 200; i++) {
