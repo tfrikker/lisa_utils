@@ -504,7 +504,7 @@ int claimNextFreeCatalogBlock() {
 
             writeSector(i, SECTOR_SIZE - 11, 0x00); //0 valid entries here.
 
-            for (int j = 0; j < 31; j++) { //let's try 31
+            for (int j = 0; j < 32; j++) { //let's try 32
                 writeSectorInt(i+3, SECTOR_SIZE - 14 - (j * 2), j * CATALOG_RECORD_LENGTH); // set up the special index entries (not sure of the actual name)
             }
 
@@ -690,14 +690,15 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
     uint8_t entryCount = getCatalogEntryCountForBlock(relevantCatalogSec);
     printf("The relevant catalog sec is: 0x%02X and the count is 0x%02X, and the variable is 0x%02X\n", relevantCatalogSec, getCatalogEntryCountForBlock(relevantCatalogSec), entryCount);
     int offsetToFirstEntry = 0;
+    const bool catalogFull = (entryCount == 0x1E);
     if (relevantCatalogSec == firstCatalogSector) { //TODO this is a hack to fix the fact there's a directory in the first catalog block.
         offsetToFirstEntry = 0x4E;
         entryCount--;
     }
     bytes dirBlock = read4Sectors(relevantCatalogSec);
-    int entryToMove = getEntryToMove(dirBlock, offsetToFirstEntry, entryCount, name, nameLength, CATALOG_RECORD_LENGTH, 3);
+    const int entryToMove = getEntryToMove(dirBlock, offsetToFirstEntry, entryCount, name, nameLength, CATALOG_RECORD_LENGTH, 3);
 
-    if (entryCount < 0x1D) { // TODO: should be 1E, if there's space to add the new entry to this block
+    if (!catalogFull) { // if there's space to add the new entry to this block
         if (entryToMove != -1) { // if we fit in the middle
             const int entryOffset = offsetToFirstEntry + (entryToMove * CATALOG_RECORD_LENGTH);
             const int catalogEntryOffset = DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffset; //offset to the place to write in the file
@@ -728,21 +729,20 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
         const int nextFreeBlock = claimNextFreeCatalogBlock();
         printf("Space to create new catalog block claimed at sector = %d\n", nextFreeBlock);
         printf("Entry index to move from old block is: 0x%02X\n", entryToMove);
-        //if we're placed into the middle of a sector that's full, move the entries after us to the new one...
-        if (entryToMove == entryCount) {
-            entryToMove = entryCount - 2; //...but if we're placed at the *end* of a block that's full, move some of the entries, arbitrarily
-        }
         int movedEntries = 0;
         bool first = true;
-        char *firstname = malloc(36);
-        for (int e = entryToMove; e < entryCount; e++) { //todo move all entries after us
+        char *firstname = malloc(36 * sizeof(char));
+        for (int e = (3 * entryCount) / 4; e < entryCount; e++) { //todo move 3/4 to the new block
             const int entryOffsetInSource = offsetToFirstEntry + (e * CATALOG_RECORD_LENGTH);
             const int entryOffsetInDestination = (movedEntries * CATALOG_RECORD_LENGTH);
             if (first) {
                 first = false;
+                printf("NEW ENTRYYYYYYYYY: ");
                 for (int i = 0; i < 36; i++) {
                     firstname[i] = getImage()[DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffsetInSource + 3 + i];
+                    printf("%c", firstname[i]);
                 }
+                printf("\n");
             }
             for (int j = 0; j < CATALOG_RECORD_LENGTH; j++) {
                 getImage()[DATA_OFFSET + (nextFreeBlock * SECTOR_SIZE) + entryOffsetInDestination + j] = getImage()[DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffsetInSource + j];
@@ -757,20 +757,13 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
             if (!isCatalogSector(d)) {
                 continue;
             }
-            printf("CHECKING CATALOG FOR NON-LEAF: 0x%02X\n", d);
             bytes nonleaf = read4Sectors(d);
-            for (int jjj = 0; jjj < 20; jjj++) {
-                printf("%02X", nonleaf[jjj]);
-            }
-            printf("\n");
             if (nonleaf[0] == 0x24 && nonleaf[1] == 0x00 && nonleaf[2] == 0x00) {
-                printf("THIS IS A REAL ONE.\n");
                 free(nonleaf);
                 nonleaf = NULL;
                 d += 3;
                 continue; //leaf
             }
-            printf("WE FOUND OUR NON-LEAF!");
 
             int nonLeafEntryCount = getImage()[DATA_OFFSET + (SECTOR_SIZE * (d + 3 + 1)) - 11];
             int nonLeafEntryToMove = getEntryToMove(nonleaf, 0, nonLeafEntryCount, firstname, 32, CATALOG_NONLEAF_RECORD_LENGTH, 7);
@@ -781,14 +774,13 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
                 const int destinationOffsetOfNonLeafEntryWithinBlock = originalOffsetOfNonLeafEntryWithinBlock + CATALOG_NONLEAF_RECORD_LENGTH;
                 for (int eIdx = 0; eIdx < CATALOG_NONLEAF_RECORD_LENGTH; eIdx++) {
                     const int off = originalOffsetOfNonLeafEntryWithinBlock + eIdx;
-                    printf("%02X", nonleaf[off]);
                     getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + destinationOffsetOfNonLeafEntryWithinBlock + eIdx] = nonleaf[off];
                 }
-                printf("\n");
             }
 
-            int os = nonLeafEntryToMove * CATALOG_NONLEAF_RECORD_LENGTH;
-            uint32_t newBk = (uint32_t) (nextFreeBlock - MDDFSec);
+            const int os = nonLeafEntryToMove * CATALOG_NONLEAF_RECORD_LENGTH;
+            printf("Writing new nonleaf entry to offset = 0x%02X\n", DATA_OFFSET + (SECTOR_SIZE * d) + os);
+            const uint32_t newBk = (uint32_t) (nextFreeBlock - MDDFSec);
             getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os] = (newBk >> 24) & 0xFF;
             getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os + 1] = (newBk >> 16) & 0xFF;
             getImage()[DATA_OFFSET + (SECTOR_SIZE * d) + os + 2] = (newBk >> 8) & 0xFF;
@@ -810,13 +802,13 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
 
         // fix valid counts
         writeSector(relevantCatalogSec + 3, SECTOR_SIZE - 11, getCatalogEntryCountForBlock(relevantCatalogSec) - movedEntries);
-        writeSector(nextFreeBlock + 3, SECTOR_SIZE - 11, movedEntries + 1);
+        writeSector(nextFreeBlock + 3, SECTOR_SIZE - 11, movedEntries);
 
         bytes srcSec = readSector(relevantCatalogSec + 3);
         const uint32_t forward = readLong(readSector(relevantCatalogSec + 3), SECTOR_SIZE - 6);
         free(srcSec);
 
-        //fix linked list of blocks.
+        // fix linked list of blocks
         writeSectorLong(relevantCatalogSec + 3, SECTOR_SIZE - 6, (uint32_t) (nextFreeBlock - MDDFSec));
         writeSectorLong(forward + MDDFSec + 3, SECTOR_SIZE - 10, (uint32_t) (nextFreeBlock - MDDFSec));
 
@@ -903,19 +895,17 @@ void writeFile(const char *srcFileName, char *name, bool isPascal, bool isText) 
     const int BLOCK_SIZE = SECTOR_SIZE * 2;
 
     // write the data to a buffer
-    bytes dataBuf = malloc(rawFileSize * 4); // Enough memory for the file with some leeway
+    bytes dataBuf = malloc(rawFileSize * 100); // Enough memory for the file with lots of leeway
     int bytesWritten = 0;
     if (isText) {
         for (int i = 0; i < BLOCK_SIZE; i++) { //1KB of header on text files
             dataBuf[bytesWritten++] = 0x00;
         }
     }
-    //printf("    - wrote header. bytesWritten=0x%02X\n", bytesWritten);
     bool justWroteSemi = false;
     bool justWroteNewline = false;
     for (int i = 0; i < rawFileSize; i++) { // for every byte of the input data
         uint8_t b = filedata[i];
-        //printf("%c", b);
         if (b == 0x0A) {
             b = 0x0D; //replace Mac style line breaks with Lisa style
         }
@@ -925,7 +915,6 @@ void writeFile(const char *srcFileName, char *name, bool isPascal, bool isText) 
         }
         if (bytesWritten % BLOCK_SIZE > (BLOCK_SIZE - 0x190) && justWroteNewline) {
             const int padding = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
-            //printf("        - bytesWritten = 0x%02X, adding 0x%02X bytes of padding\n", bytesWritten, padding);
             for (int j = 0; j < padding; j++) {
                 //write the footer to each sector
                 dataBuf[bytesWritten++] = 0x00;
@@ -934,7 +923,7 @@ void writeFile(const char *srcFileName, char *name, bool isPascal, bool isText) 
             justWroteNewline = false;
         } else {
             dataBuf[bytesWritten++] = b;
-            if (b == ';' || b == '}' || b == ')') { //; or }
+            if (b == ';' || b == '}' || b == ')') {
                 justWroteSemi = true;
                 justWroteNewline = false;
             } else if (b == 0x0D) {
@@ -950,15 +939,10 @@ void writeFile(const char *srcFileName, char *name, bool isPascal, bool isText) 
             }
         }
     }
-    //printf("    - wrote data. bytesWritten=0x%2X\n", bytesWritten);
     const int remaining = BLOCK_SIZE - (bytesWritten % BLOCK_SIZE);
-    //printf("    - (remaining = 0x%2X)\n", remaining);
     for (int i = 0; i < remaining; i++) {
         dataBuf[bytesWritten++] = 0x00;
     }
-    //printf("    - wrote end. bytesWritten=0x%2X\n", bytesWritten);
-
-    //printf("Final buffer length = 0x%2X\n", bytesWritten);
 
     // do the work
     const int sectorCount = getSectorCount(bytesWritten);
@@ -989,9 +973,7 @@ int main(int argc, char *argv[]) {
     findBitmapSec();
     findSFileSec();
 
-    //printSFile();
-
-
+    /*
     for (int i = 0; i < 200; i++) {
         const uint8_t calculatedChecksum = calculateChecksum(i);
         printf("sec %d (0x%02X) (offset=0x%02X) with chksum 0x%02X:", i, i, DATA_OFFSET + (i * SECTOR_SIZE), (calculatedChecksum & 0xFF));
@@ -1007,9 +989,10 @@ int main(int argc, char *argv[]) {
         }
         printf("\n");
     }
-
+    */
 
     // get the file we want to write
+    /*
     writeFile("angles.text", "libqd/angles.text", false, true);
     writeFile("arcs.text", "libqd/arcs.text", false, true);
     writeFile("bitblt.text", "libqd/bitblt.text", false, true);
@@ -1020,10 +1003,11 @@ int main(int argc, char *argv[]) {
     writeFile("fastline.text", "libqd/fastline.text", false, true);
     writeFile("fixmath.text", "libqd/fixmath.text", false, true);
     writeFile("grafasm.text", "libqd/grafasm.text", false, true);
+    writeFile("graftypes.text", "libqd/graftypes.text", false, true);
     writeFile("lcursor.text", "libqd/lcursor.text", false, true);
-    /*
     writeFile("line2.text", "libqd/line2.text", false, true);
     writeFile("lines.text", "libqd/lines.text", false, true);
+    writeFile("m-quickdrawtest.text", "m/quickdrawtest.text", false, true);
     writeFile("ovals.text", "libqd/ovals.text", false, true);
     writeFile("packrgn.text", "libqd/packrgn.text", false, true);
     writeFile("pictures.text", "libqd/pictures.text", false, true);
@@ -1031,6 +1015,10 @@ int main(int argc, char *argv[]) {
     writeFile("putline.text", "libqd/putline.text", false, true);
     writeFile("putoval.text", "libqd/putoval.text", false, true);
     writeFile("putrgn.text", "libqd/putrgn.text", false, true);
+    writeFile("qdsample.text", "qdsample.text", true, true);
+    writeFile("qdsupport.text", "qdsupport.text", true, true);
+    writeFile("quickdraw.text", "quickdraw.text", true, true);
+    writeFile("quickdraw2.text", "quickdraw2.text", true, true);
     writeFile("rects.text", "libqd/rects.text", false, true);
     writeFile("regions.text", "libqd/regions.text", false, true);
     writeFile("rgnblt.text", "libqd/rgnblt.text", false, true);
@@ -1043,17 +1031,16 @@ int main(int argc, char *argv[]) {
     writeFile("util.text", "libqd/util.text", false, true);
     */
 
-
-
-
-
+    writeFile("graftypes.text", "libqd/graftypes.text", false, true);
+    writeFile("polygons.text", "libqd/polygons.text", false, true);
+    writeFile("hwint.text", "hwint.text", true, true);
+    writeFile("stunts.text", "stunts.text", true, true);
+    writeFile("gdev.text", "gdev.text", false, true);
 
     // cleanup and close
-
     fixAllTagChecksums();
     fwrite(image, 1, FILE_LENGTH, output);
     fclose(output);
-
 
     return 0;
 }
