@@ -178,13 +178,6 @@ void zeroSector(const int sector) {
     }
 }
 
-bool isCatalogSector(const int sec) {
-    bytes tag = readTag(sec);
-    const uint16_t fileId = readInt(tag, 4);
-    free(tag);
-    return fileId == CATALOG_FILE_ID;
-}
-
 void findMDDFSec() {
     for (int i = 0; i < SECTORS_IN_DISK; i++) {
         bytes tag = readTag(i);
@@ -260,8 +253,8 @@ void fixFreeBitmap(const int sec) {
     const int byteIndex = (sectorToCorrect / 8) % SECTOR_SIZE;
     const int baseSec = ((sectorToCorrect / 8) * 8) + MDDFSec;
 
-    uint8_t oldByte = bitmapByte(sec);
-    uint8_t byteToWrite = oldByte | (1 << (sec - baseSec)); //TODO check for off-by-1 errors here
+    const uint8_t oldByte = bitmapByte(sec);
+    const uint8_t byteToWrite = oldByte | (1 << (sec - baseSec)); //TODO check for off-by-1 errors here
 
     bytes s = readSector(freeBitmapSector);
     free(s);
@@ -357,7 +350,7 @@ int findNextFreeSFileIndex() {
     for (int i = sFileSec; i < (sFileSec + sfileBlockCount); i++) {
         bytes data = readSector(i);
         for (int sfileIdx = 0; sfileIdx < slist_packing; sfileIdx++) {
-            int srec = sfileIdx * SFILE_RECORD_LENGTH;
+            const int srec = sfileIdx * SFILE_RECORD_LENGTH;
             const uint32_t hintAddr = readLong(data, srec);
             /*
             printf("IDX = 0x%02X: ", idx);
@@ -406,7 +399,7 @@ uint16_t claimNextFreeSFileIndex(const int startSector, const int sectorCount, c
 
             claimNextFreeHintSector(s, startSector, sectorCount, nameLength, name);
 
-            int newEmptyFile = findNextFreeSFileIndex();
+            const int newEmptyFile = findNextFreeSFileIndex();
             writeSectorInt(MDDFSec, MDDF_EMPTY_FILE, newEmptyFile);
 
             return emptyFile;
@@ -422,7 +415,7 @@ void printSFile() {
     for (int i = sFileSec; i < (sFileSec + sfileBlockCount); i++) {
         bytes data = readSector(i);
         for (int sfileIdx = 0; sfileIdx < slist_packing; sfileIdx++) {
-            int srec = sfileIdx * SFILE_RECORD_LENGTH; //length of srecord
+            const int srec = sfileIdx * SFILE_RECORD_LENGTH; //length of srecord
             const uint32_t hintAddr = readLong(data, srec);
             printf("IDX = 0x%02X: ", idx);
             printf("hintAddr = 0x%08X, ", hintAddr);
@@ -459,7 +452,10 @@ void findNonLeafCatalogSec() {
     nonLeafCatalogSec = -1;
     for (int d = 0; d < SECTORS_IN_DISK; d++) {
         //in all the possible catalogSectors. They come in 4s, always
-        if (!isCatalogSector(d)) {
+        bytes tag = readTag(d);
+        const uint16_t fileId = readInt(tag, 4);
+        free(tag);
+        if (fileId != CATALOG_FILE_ID) {
             continue;
         }
         bytes nonleaf = read4Sectors(d);
@@ -624,7 +620,7 @@ uint8_t getCatalogEntryCountForBlock(const int dirSec) {
 }
 
 void claimNewCatalogEntrySpace(const int dirSec, const int entryOffset, const int sfileid, const int fileSize, const int sectorCount, const int nameLength, const char *name) {
-    int entry = getCatalogEntryCountForBlock(dirSec) + 1;
+    const int entry = getCatalogEntryCountForBlock(dirSec) + 1;
     writeSector(dirSec + 3, SECTOR_SIZE - 11, entry); //claim another valid entry in this sector
     writeCatalogEntry(DATA_OFFSET + (dirSec * SECTOR_SIZE) + entryOffset, sfileid, fileSize, sectorCount, nameLength, name);
 }
@@ -633,21 +629,15 @@ void claimNewCatalogEntrySpace(const int dirSec, const int entryOffset, const in
 // - if contained by an existing block, return that block regardless if it has space or not
 // - if not contained by an existing block, return the block that ends closest (alphanumerically) to the filename, regardless if it has space or not
 int findRelevantCatalogSector(const int nameLength, const char *name) {
-    bool first = true;
     int closestDirSec = -1;
     char *closestDirName = NULL;
-    for (int dirSec = 0; dirSec < SECTORS_IN_DISK; dirSec++) { //in all the possible catalogSectors. They come in 4s, always
-        if (!isCatalogSector(dirSec)) {
-            continue;
-        }
+    const int first = (int) readMDDFLong(MDDF_ROOT_PAGE);
+    int dirSec = first;
+    while (dirSec != -1) {
         bytes dirBlock = read4Sectors(dirSec);
-        if (!(dirBlock[0] == 0x24 && dirBlock[1] == 0x00 && dirBlock[2] == 0x00)) {
-            continue; //invalid block
-        }
         int offsetToFirstEntry = 0;
-        if (first) {
+        if (dirSec == first) {
             closestDirSec = dirSec; // if we're the first entry, we'll need somewhere to go
-            first = false;
             offsetToFirstEntry = 0x4E; //seems to be the case for the first catalog sector block only
         }
 
@@ -688,8 +678,17 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
         }
 
         free(dirBlock);
-        dirSec += 3; // skip past the rest in this block
+
+        bytes sec = readSector(dirSec + 3);
+        const uint32_t next = readLong(sec, SECTOR_SIZE - 6);
+        free(sec);
+        if (next == 0xFFFFFFFF) {
+            dirSec = -1;
+        } else {
+            dirSec = (int) next + MDDFSec;
+        }
     }
+
     if (closestDirName != NULL) {
         free(closestDirName);
     }
