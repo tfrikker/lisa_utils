@@ -9,6 +9,10 @@
 
 #define bytes uint8_t*
 
+enum filetype {
+    PASCAL, NONPASCAL, DATA
+};
+
 // ---------- Constants ----------
 // bytes
 const int FILE_LENGTH = 0x4EF854; // length of a standard 5MB ProFile image
@@ -673,7 +677,7 @@ int findRelevantCatalogSector(const int nameLength, const char *name) {
     return closestDirSec; // we weren't contained in any, so return the closest one
 }
 
-int getEntryToMove(bytes dirBlock, int offsetToFirstEntry, int entryCount, char *name, int nameLength, int recordLength, int nameOffset) {
+int getEntryToMove(bytes dirBlock, const int offsetToFirstEntry, const int entryCount, const char *name, const int nameLength, const int recordLength, const int nameOffset) {
     for (int e = 0; e < entryCount; e++) {
         const int entryOffset = offsetToFirstEntry + (e * recordLength);
         const bool nameBeforeExistingEntry = ci_a_before_b(name, nameLength, (char *) dirBlock + entryOffset + nameOffset, 32);
@@ -691,7 +695,7 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
     printf("The relevant catalog sec is: 0x%02X and the count is 0x%02X, and the variable is 0x%02X\n", relevantCatalogSec, getCatalogEntryCountForBlock(relevantCatalogSec), entryCount);
     int offsetToFirstEntry = 0;
     const bool catalogFull = (entryCount == 0x1E);
-    if (relevantCatalogSec == firstCatalogSector) { //TODO this is a hack to fix the fact there's a directory in the first catalog block.
+    if (relevantCatalogSec == firstCatalogSector) { //TODO this is a hack to handle the fact there's a directory in the first catalog block.
         offsetToFirstEntry = 0x4E;
         entryCount--;
     }
@@ -732,17 +736,14 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
         int movedEntries = 0;
         bool first = true;
         char *firstname = malloc(36 * sizeof(char));
-        for (int e = (3 * entryCount) / 4; e < entryCount; e++) { //todo move 3/4 to the new block
+        for (int e = (3 * entryCount) / 4; e < entryCount; e++) { // move 3/4 to the new block
             const int entryOffsetInSource = offsetToFirstEntry + (e * CATALOG_RECORD_LENGTH);
             const int entryOffsetInDestination = (movedEntries * CATALOG_RECORD_LENGTH);
             if (first) {
                 first = false;
-                printf("NEW ENTRYYYYYYYYY: ");
                 for (int i = 0; i < 36; i++) {
-                    firstname[i] = getImage()[DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffsetInSource + 3 + i];
-                    printf("%c", firstname[i]);
+                    firstname[i] = (char) getImage()[DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffsetInSource + 3 + i];
                 }
-                printf("\n");
             }
             for (int j = 0; j < CATALOG_RECORD_LENGTH; j++) {
                 getImage()[DATA_OFFSET + (nextFreeBlock * SECTOR_SIZE) + entryOffsetInDestination + j] = getImage()[DATA_OFFSET + (relevantCatalogSec * SECTOR_SIZE) + entryOffsetInSource + j];
@@ -810,10 +811,10 @@ void claimNewCatalogEntry(const uint16_t sfileid, const int fileSize, const int 
 
         // fix linked list of blocks
         writeSectorLong(relevantCatalogSec + 3, SECTOR_SIZE - 6, (uint32_t) (nextFreeBlock - MDDFSec));
-        writeSectorLong(forward + MDDFSec + 3, SECTOR_SIZE - 10, (uint32_t) (nextFreeBlock - MDDFSec));
+        writeSectorLong((int) forward + MDDFSec + 3, SECTOR_SIZE - 10, (uint32_t) (nextFreeBlock - MDDFSec));
 
         writeSectorLong(nextFreeBlock + 3, SECTOR_SIZE - 10, (uint32_t) (relevantCatalogSec - MDDFSec));
-        writeSectorLong(nextFreeBlock + 3, SECTOR_SIZE - 6, (uint32_t) forward);
+        writeSectorLong(nextFreeBlock + 3, SECTOR_SIZE - 6, forward);
 
         // recursively re-call this because we have more space now
         claimNewCatalogEntry(sfileid, fileSize, sectorCount, nameLength, name);
@@ -873,8 +874,8 @@ int findStartingSector(const int contiguousSectors) {
     return -1; // not found
 }
 
-void writeFile(const char *srcFileName, char *name, bool isPascal, bool isText) {
-    const int nameLength = strlen(name);
+void writeFile(const char *srcFileName, char *name, enum filetype fileType) {
+    const int nameLength = (int) strlen(name);
     printf("_________________ Writing file: ");
     for (int i = 0; i < nameLength; i++) {
         printf("%c", name[i]);
@@ -897,7 +898,7 @@ void writeFile(const char *srcFileName, char *name, bool isPascal, bool isText) 
     // write the data to a buffer
     bytes dataBuf = malloc(rawFileSize * 100); // Enough memory for the file with lots of leeway
     int bytesWritten = 0;
-    if (isText) {
+    if (fileType == PASCAL || fileType == NONPASCAL) {
         for (int i = 0; i < BLOCK_SIZE; i++) { //1KB of header on text files
             dataBuf[bytesWritten++] = 0x00;
         }
@@ -909,7 +910,7 @@ void writeFile(const char *srcFileName, char *name, bool isPascal, bool isText) 
         if (b == 0x0A) {
             b = 0x0D; //replace Mac style line breaks with Lisa style
         }
-        if (isText && (bytesWritten % BLOCK_SIZE == BLOCK_SIZE - 1)) {
+        if ((fileType == PASCAL || fileType == NONPASCAL) && (bytesWritten % BLOCK_SIZE == BLOCK_SIZE - 1)) {
             printf("ERROR! There was no padding added here.\n");
             assert(false);
         }
@@ -927,7 +928,7 @@ void writeFile(const char *srcFileName, char *name, bool isPascal, bool isText) 
                 justWroteSemi = true;
                 justWroteNewline = false;
             } else if (b == 0x0D) {
-                if (justWroteSemi || !isPascal) {
+                if (justWroteSemi || fileType != PASCAL) {
                     justWroteNewline = true;
                 } else {
                     justWroteSemi = false;
@@ -993,49 +994,49 @@ int main(int argc, char *argv[]) {
 
     // get the file we want to write
     /*
-    writeFile("angles.text", "libqd/angles.text", false, true);
-    writeFile("arcs.text", "libqd/arcs.text", false, true);
-    writeFile("bitblt.text", "libqd/bitblt.text", false, true);
-    writeFile("bitmaps.text", "libqd/bitmaps.text", false, true);
-    writeFile("drawarc.text", "libqd/drawarc.text", false, true);
-    writeFile("drawline.text", "libqd/drawline.text", false, true);
-    writeFile("drawtext.text", "libqd/drawtext.text", false, true);
-    writeFile("fastline.text", "libqd/fastline.text", false, true);
-    writeFile("fixmath.text", "libqd/fixmath.text", false, true);
-    writeFile("grafasm.text", "libqd/grafasm.text", false, true);
-    writeFile("graftypes.text", "libqd/graftypes.text", false, true);
-    writeFile("lcursor.text", "libqd/lcursor.text", false, true);
-    writeFile("line2.text", "libqd/line2.text", false, true);
-    writeFile("lines.text", "libqd/lines.text", false, true);
-    writeFile("m-quickdrawtest.text", "m/quickdrawtest.text", false, true);
-    writeFile("ovals.text", "libqd/ovals.text", false, true);
-    writeFile("packrgn.text", "libqd/packrgn.text", false, true);
-    writeFile("pictures.text", "libqd/pictures.text", false, true);
-    writeFile("polygons.text", "libqd/polygons.text", false, true);
-    writeFile("putline.text", "libqd/putline.text", false, true);
-    writeFile("putoval.text", "libqd/putoval.text", false, true);
-    writeFile("putrgn.text", "libqd/putrgn.text", false, true);
-    writeFile("qdsample.text", "qdsample.text", true, true);
-    writeFile("qdsupport.text", "qdsupport.text", true, true);
-    writeFile("quickdraw.text", "quickdraw.text", true, true);
-    writeFile("quickdraw2.text", "quickdraw2.text", true, true);
-    writeFile("rects.text", "libqd/rects.text", false, true);
-    writeFile("regions.text", "libqd/regions.text", false, true);
-    writeFile("rgnblt.text", "libqd/rgnblt.text", false, true);
-    writeFile("rgnop.text", "libqd/rgnop.text", false, true);
-    writeFile("rrects.text", "libqd/rrects.text", false, true);
-    writeFile("seekrgn.text", "libqd/seekrgn.text", false, true);
-    writeFile("sortpoints.text", "libqd/sortpoints.text", false, true);
-    writeFile("stretch.text", "libqd/stretch.text", false, true);
-    writeFile("text.text", "libqd/text.text", false, true);
-    writeFile("util.text", "libqd/util.text", false, true);
+    writeFile("angles.text", "libqd/angles.text", NONPASCAL);
+    writeFile("arcs.text", "libqd/arcs.text", NONPASCAL);
+    writeFile("bitblt.text", "libqd/bitblt.text", NONPASCAL);
+    writeFile("bitmaps.text", "libqd/bitmaps.text", NONPASCAL);
+    writeFile("drawarc.text", "libqd/drawarc.text", NONPASCAL);
+    writeFile("drawline.text", "libqd/drawline.text", NONPASCAL);
+    writeFile("drawtext.text", "libqd/drawtext.text", NONPASCAL);
+    writeFile("fastline.text", "libqd/fastline.text", NONPASCAL);
+    writeFile("fixmath.text", "libqd/fixmath.text", NONPASCAL);
+    writeFile("grafasm.text", "libqd/grafasm.text", NONPASCAL);
+    writeFile("graftypes.text", "libqd/graftypes.text", NONPASCAL);
+    writeFile("lcursor.text", "libqd/lcursor.text", NONPASCAL);
+    writeFile("line2.text", "libqd/line2.text", NONPASCAL);
+    writeFile("lines.text", "libqd/lines.text", NONPASCAL);
+    writeFile("m-quickdrawtest.text", "m/quickdrawtest.text", NONPASCAL);
+    writeFile("ovals.text", "libqd/ovals.text", NONPASCAL);
+    writeFile("packrgn.text", "libqd/packrgn.text", NONPASCAL);
+    writeFile("pictures.text", "libqd/pictures.text", NONPASCAL);
+    writeFile("polygons.text", "libqd/polygons.text", NONPASCAL);
+    writeFile("putline.text", "libqd/putline.text", NONPASCAL);
+    writeFile("putoval.text", "libqd/putoval.text", NONPASCAL);
+    writeFile("putrgn.text", "libqd/putrgn.text", NONPASCAL);
+    writeFile("qdsample.text", "qdsample.text", PASCAL);
+    writeFile("qdsupport.text", "qdsupport.text", PASCAL);
+    writeFile("quickdraw.text", "quickdraw.text", PASCAL);
+    writeFile("quickdraw2.text", "quickdraw2.text", PASCAL);
+    writeFile("rects.text", "libqd/rects.text", NONPASCAL);
+    writeFile("regions.text", "libqd/regions.text", NONPASCAL);
+    writeFile("rgnblt.text", "libqd/rgnblt.text", NONPASCAL);
+    writeFile("rgnop.text", "libqd/rgnop.text", NONPASCAL);
+    writeFile("rrects.text", "libqd/rrects.text", NONPASCAL);
+    writeFile("seekrgn.text", "libqd/seekrgn.text", NONPASCAL);
+    writeFile("sortpoints.text", "libqd/sortpoints.text", NONPASCAL);
+    writeFile("stretch.text", "libqd/stretch.text", NONPASCAL);
+    writeFile("text.text", "libqd/text.text", NONPASCAL);
+    writeFile("util.text", "libqd/util.text", NONPASCAL);
     */
 
-    writeFile("graftypes.text", "libqd/graftypes.text", false, true);
-    writeFile("polygons.text", "libqd/polygons.text", false, true);
-    writeFile("hwint.text", "hwint.text", true, true);
-    writeFile("stunts.text", "stunts.text", true, true);
-    writeFile("gdev.text", "gdev.text", false, true);
+    writeFile("graftypes.text", "libqd/graftypes.text", NONPASCAL);
+    writeFile("polygons.text", "libqd/polygons.text", NONPASCAL);
+    writeFile("hwint.text", "hwint.text", PASCAL);
+    writeFile("stunts.text", "stunts.text", PASCAL);
+    writeFile("gdev.text", "gdev.text", NONPASCAL);
 
     // cleanup and close
     fixAllTagChecksums();
